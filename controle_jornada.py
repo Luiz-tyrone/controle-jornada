@@ -298,7 +298,9 @@ def valid_db(path):
 
 class App:
     def __init__(self,root):
-        self.root=root; self.root.title(APP+' | v0.1.5'); self.root.geometry('1500x850'); self.root.minsize(1150,700); self.root.state('zoomed')
+        self.root=root; self.root.title(APP+' | v0.1.6'); self.root.geometry('1500x850'); self.root.minsize(1150,700); self.root.state('zoomed')
+        try:self.root.iconbitmap(default=str(Path(getattr(sys,'_MEIPASS',Path(__file__).parent))/'agt_log.ico'))  # vale também para as janelas filhas
+        except tk.TclError:pass
         LOCAL.mkdir(parents=True,exist_ok=True)
         self.server=self.load_server()
         self.connected=False
@@ -356,7 +358,7 @@ class App:
         foot=tk.Frame(self.root,bg=BG);foot.pack(side='bottom',fill='x',padx=24,pady=(0,10))
         self.network=lbl(foot,'● Aguardando servidor',WARN,font=(FONT,9,'bold'),padx=10,pady=3);self.network.pack(side='left',padx=(0,12))
         lbl(foot,'Duplo clique em um dia para conferir ou editar. Fechamento financeiro em validação.',MUTED,9,bg=BG).pack(side='left')
-        lbl(foot,'Desenvolvido por Luiz Tyrone  ·  v0.1.5',MUTED,9,bg=BG).pack(side='right')
+        lbl(foot,'Desenvolvido por Luiz Tyrone  ·  v0.1.6',MUTED,9,bg=BG).pack(side='right')
         content=tk.Frame(self.root,bg=BG)
 
         side=tk.Frame(content,bg=CARD,width=440,highlightthickness=1,highlightbackground=LINE);side.pack(side='left',fill='y',padx=(0,16));side.pack_propagate(False)

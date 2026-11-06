@@ -1,10 +1,15 @@
-CONTROLE DE JORNADA AGT LOG — v0.1.5
+CONTROLE DE JORNADA AGT LOG — v0.1.6
 
 COMO USAR
 1. Feche o programa anterior.
 2. Abra a pasta "dist" e execute "Controle de Jornada AGT LOG.exe".
    (Para recompilar: dê dois cliques em GERAR_EXE.bat.)
 3. Não apague a pasta de dados do servidor nem o banco local.
+
+VERSÃO 0.1.6
+- Ícone do programa e das janelas com o logo AGT LOG (antes aparecia uma pena).
+- Visual na paleta AGT LOG, página Planilha do mês, seletor de ano/mês e linha diária HE em T espera.
+- Botão Gerar TXT contábil (rubricas 150 e 571, empresa 82), com o código do Domínio salvo por motorista.
 
 VERSÃO 0.1.5
 - Dias de espera: o cálculo não usa mais o movimento/parado do PDF, igual à planilha

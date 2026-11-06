@@ -4,10 +4,10 @@ Programa para Windows que lê os PDFs de jornada do rastreador, calcula as horas
 
 ## Como instalar no computador de quem vai usar
 
-O repositório é **privado**: entre numa conta do GitHub com acesso a ele antes de baixar.
+Se o repositório estiver privado, entre antes numa conta do GitHub com acesso a ele.
 
 1. Abra a página **Releases** deste repositório (à direita, em "Releases").
-2. Baixe o arquivo **`Controle de Jornada AGT LOG.exe`** da versão mais recente.
+2. Baixe o arquivo **`Controle_de_Jornada_AGT_LOG.exe`** da versão mais recente.
 3. Dê dois cliques nele. Não precisa instalar o Python.
 4. Na primeira vez, o programa procura a pasta de dados no servidor da empresa. Se não encontrar, use o botão **Servidor →** para escolher a pasta `DADOS DO NOVO SISTEMA QUE SUB PLANILHA`.
 
