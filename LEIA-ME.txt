@@ -1,10 +1,19 @@
-CONTROLE DE JORNADA AGT LOG — v0.1.7
+CONTROLE DE JORNADA AGT LOG — v0.1.8
 
 COMO USAR
 1. Feche o programa anterior.
 2. Abra a pasta "dist" e execute "Controle de Jornada AGT LOG.exe".
    (Para recompilar: dê dois cliques em GERAR_EXE.bat.)
 3. Não apague a pasta de dados do servidor nem o banco local.
+
+VERSÃO 0.1.8
+- Espelho do servidor em cada computador (só de ida: o servidor alimenta, nunca o contrário):
+  C:\Users\<usuário>\AppData\Local\AGTLOG\ControleJornada\Espelho do servidor
+  Ao abrir, em segundo plano, guarda uma cópia datada de cada versão nova do servidor (só se
+  estiver íntegra) e copia os PDFs originais. Fica a última cópia de cada dia, por 1 ano.
+  RECUPERAR SE O SERVIDOR FOR PERDIDO: crie uma pasta vazia, copie para ela o arquivo
+  jornadas_AAAAMMDD_....db do dia desejado (e a subpasta PDFs Originais) e, no programa,
+  clique em "Servidor →" e escolha essa pasta.
 
 VERSÃO 0.1.7
 - Motorista separado da placa: cada dia fica ligado ao motorista do PDF, não ao veículo.

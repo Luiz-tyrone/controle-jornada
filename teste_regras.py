@@ -92,4 +92,28 @@ with tempfile.TemporaryDirectory() as tmp:
     atual.write_bytes(b'MZ velho'); novo.write_bytes(b'MZ novo')
     cj.install_update(novo, atual)
     assert atual.read_bytes() == b'MZ novo' and not novo.exists() and (Path(tmp) / 'app.antigo.exe').read_bytes() == b'MZ velho'
+# 7) Espelho só de ida: servidor -> computador, com histórico de 1 cópia por dia.
+import datetime as dt, sqlite3, os
+with tempfile.TemporaryDirectory() as tmp:
+    srv, esp = Path(tmp) / 'servidor', Path(tmp) / 'espelho'
+    (srv / 'PDFs Originais').mkdir(parents=True); (srv / 'PDFs Originais' / 'a.pdf').write_bytes(b'%PDF')
+    def versao(nome):
+        cj.init_db(srv / nome)
+    versao('jornadas_20251001_080000_000000.db')                            # mais de 1 ano antes de "hoje"
+    versao('jornadas_20261105_090000_000000.db'); versao('jornadas_20261105_180000_000000.db')
+    antes = {p.name: p.stat().st_mtime for p in srv.rglob('*')}
+    hoje = dt.date(2026, 11, 6)
+    cj.mirror_server(srv, esp, today=hoje)
+    assert [p.name for p in esp.glob('*.db')] == ['jornadas_20261105_180000_000000.db'], list(esp.glob('*'))
+    assert (esp / 'PDFs Originais' / 'a.pdf').exists()
+    (srv / 'jornadas_20261106_100000_000000.db').write_bytes(b'corrompido')   # versão estragada: ignorada
+    cj.mirror_server(srv, esp, today=hoje)
+    assert len(list(esp.glob('*.db'))) == 1
+    versao('jornadas_20261106_120000_000000.db'); cj.mirror_server(srv, esp, today=hoje)
+    versao('jornadas_20261106_150000_000000.db'); cj.mirror_server(srv, esp, today=hoje)
+    assert sorted(p.name for p in esp.glob('*.db')) == ['jornadas_20261105_180000_000000.db', 'jornadas_20261106_150000_000000.db']  # 1 por dia
+    cj.mirror_server(srv, esp, today=dt.date(2027, 11, 6))                     # 1 ano depois: 05/11/2026 sai
+    assert [p.name for p in esp.glob('*.db')] == ['jornadas_20261106_150000_000000.db']
+    novos = {p.name: p.stat().st_mtime for p in srv.rglob('*')}
+    assert all(novos[k] == v for k, v in antes.items()), 'o espelho não pode alterar o servidor'
 print('OK - todas as regras conferidas')

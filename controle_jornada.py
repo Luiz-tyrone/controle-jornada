@@ -12,7 +12,7 @@ except ImportError:
     fitz = None
 
 APP = 'Controle de Jornada AGT LOG'
-VERSION = '0.1.7'  # a tag do release no GitHub deve ser v + esta versão (ex.: v0.1.8)
+VERSION = '0.1.8'  # a tag do release no GitHub deve ser v + esta versão (ex.: v0.1.8)
 GITHUB_REPO = 'Luiz-tyrone/controle-jornada'  # repositório público: as atualizações saem dos releases
 SERVER = r'\\Servidor-agtlog\doc frota\CONTROLE DE JORNADA\DADOS DO NOVO SISTEMA QUE SUB PLANILHA'
 LOCAL = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AGTLOG' / 'ControleJornada'
@@ -21,6 +21,7 @@ DB = LOCAL / 'jornadas.db'
 # Existe enquanto há alteração local que ainda não chegou ao servidor.
 PENDING = LOCAL / 'envio_pendente.flag'
 KEEP_VERSIONS = 20
+MIRROR_DAYS = 365  # espelho local: última cópia de cada dia, por 1 ano
 COLUMNS = ['data','inicio','fim','movimento','parado','espera','status']
 # Paleta do design (design/mockup.html): neutro + menta.
 # Paleta da marca AGT LOG (logo): roxo #381E42 e amarelo #FFCE42. MINT = cor de destaque (amarelo).
@@ -488,6 +489,27 @@ def valid_db(path):
     except Exception: return False
 
 
+def mirror_server(server,folder=None,days=MIRROR_DAYS,today=None):
+    """Espelho só de ida (servidor -> este computador), na pasta "Espelho do servidor" do AppData.
+    Guarda uma cópia datada de cada versão nova do servidor (só se estiver íntegra) e os PDFs originais.
+    Nada daqui é enviado ao servidor. Fica a última cópia de cada dia, por `days` dias."""
+    server=Path(server);folder=Path(folder or LOCAL/'Espelho do servidor');folder.mkdir(parents=True,exist_ok=True)
+    for part in folder.glob('*.part'):part.unlink(missing_ok=True)  # cópia interrompida ao fechar o programa
+    src=next((v for v in sorted(server.glob('jornadas_*.db'),reverse=True) if valid_db(v)),None)
+    if src and not (folder/src.name).exists():
+        part=folder/(src.name+'.part');shutil.copy2(src,part)
+        if valid_db(part):os.replace(part,folder/src.name)
+        else:part.unlink(missing_ok=True)
+    cut=((today or dt.date.today())-dt.timedelta(days=days)).strftime('%Y%m%d');kept=set()
+    for f in sorted(folder.glob('jornadas_*.db'),reverse=True):  # nome: jornadas_AAAAMMDD_HHMMSS_...
+        day=f.name[9:17]
+        if day<cut or day in kept:f.unlink(missing_ok=True)
+        else:kept.add(day)
+    pdfs=folder/'PDFs Originais';pdfs.mkdir(exist_ok=True)
+    for f in (server/'PDFs Originais').glob('*'):
+        if f.is_file() and not (pdfs/f.name).exists():shutil.copy2(f,pdfs/f.name)
+
+
 class App:
     def __init__(self,root):
         self.root=root; self.root.title(f'{APP} | v{VERSION}'); self.root.geometry('1500x850'); self.root.minsize(1150,700); self.root.state('zoomed')
@@ -499,6 +521,10 @@ class App:
         self.setup_style(); self.build()
         self.root.after(150,self.connect_server)
         if getattr(sys,'frozen',False):self.root.after(3000,self.background_tasks)  # só no .exe
+
+    def mirror(self):
+        try:mirror_server(self.server)
+        except Exception:pass  # o espelho é uma proteção extra: falha nele não atrapalha o uso
 
     def center(self,win):
         """Centraliza a janela sobre o programa."""
@@ -949,6 +975,7 @@ class App:
                 else: init_db(DB)
                 self.publish(initial=True)
             init_db(DB);self.sync_drivers();self.connected=True
+            threading.Thread(target=self.mirror,daemon=True).start()  # espelho do servidor, em silêncio
             self.network.config(text='● Servidor conectado',fg=OK)
             self.save_config(servidor=self.server)
             self.refresh()
