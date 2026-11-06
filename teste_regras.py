@@ -56,4 +56,40 @@ lines, ok, pend = cj.payroll([
 ], emps, '202611')
 assert [r['codigo'] for r in ok] == ['1001', '1002'] and len(lines) == 2, (ok, lines)
 assert [p[0] for p in pend] == ['BBB2B22', 'DDD4D44'], pend
+# 5) Motorista separado da placa: troca no meio do mês e nome cortado pelo rastreador.
+with tempfile.TemporaryDirectory() as tmp:
+    cj.DB = Path(tmp) / 'troca.db'; cj.init_db(cj.DB)
+    linhas = [('XXX1A11', '2026-11-01', 'TRUCK: JOAO TESTE LIMA (WG) 111111'),
+              ('XXX1A11', '2026-11-02', 'TRUCK: JOAO TESTE LIMA (WG) 111111'),
+              ('YYY2B22', '2026-11-03', 'TRUCK: JOAO TESTE LIMA - LJ 222222'),       # A trocou para a placa Y
+              ('XXX1A11', '2026-11-03', 'TRUCK: PEDRO EXEMPLO (WG) 111111'),         # B assumiu a placa X (nome cortado)
+              ('XXX1A11', '2026-11-04', 'TRUCK: PEDRO EXEMPLO SOUZA (WG) 111111')]   # nome completo do mesmo B
+    with cj.db() as con:
+        for placa, data, nome in linhas:
+            con.execute('INSERT INTO jornadas VALUES(?,?,?,?,?,?,?,?,?,?,?)', (placa, data, nome, '', '', '00:00:00', '00:00:00', '10:00:00', 'ESPERA FIXA', 'x', 'agora'))
+        cj.link_drivers(con)
+        nomes = dict(con.execute('SELECT nome,id FROM condutores'))
+        assert set(nomes) == {'JOAO TESTE LIMA', 'PEDRO EXEMPLO SOUZA'}, nomes  # 2 motoristas, não 2 placas nem 3 nomes
+        uso = cj.month_plates(con, '2026-11')
+        assert [p for p, _, _ in uso[nomes['JOAO TESTE LIMA']]] == ['XXX1A11', 'YYY2B22'], uso
+        assert [p for p, _, _ in uso[nomes['PEDRO EXEMPLO SOUZA']]] == ['XXX1A11'], uso
+        dias = dict(con.execute(f'SELECT a.condutor,COUNT(*) {cj.JORNADAS} GROUP BY 1'))
+        assert dias == {nomes['JOAO TESTE LIMA']: 3, nomes['PEDRO EXEMPLO SOUZA']: 2}, dias
+        cj.link_drivers(con)  # rodar de novo não duplica
+        assert con.execute('SELECT COUNT(*) FROM condutores').fetchone()[0] == 2
+    con.close()  # Windows: banco aberto impede apagar a pasta temporária
+# 6) Atualização automática: só release publicado, mais novo e com .exe; troca do arquivo.
+exe = {'name': 'Controle_de_Jornada_AGT_LOG.exe', 'browser_download_url': 'u', 'size': 10, 'digest': 'sha256:ab'}
+rel = lambda tag, **k: {'tag_name': tag, 'assets': [exe], 'draft': False, 'prerelease': False, **k}
+assert cj.newer_release(rel('v0.1.8'), '0.1.7')['versao'] == '0.1.8'
+assert cj.newer_release(rel('v0.1.10'), '0.1.9')['sha256'] == 'ab'      # 10 > 9 (não é comparação de texto)
+assert cj.newer_release(rel('v0.1.7'), '0.1.7') is None                  # mesma versão
+assert cj.newer_release(rel('v0.1.6'), '0.1.7') is None                  # mais antiga
+assert cj.newer_release(rel('v0.2.0', prerelease=True), '0.1.7') is None
+assert cj.newer_release({**rel('v0.2.0'), 'assets': []}, '0.1.7') is None  # sem .exe
+with tempfile.TemporaryDirectory() as tmp:
+    atual, novo = Path(tmp) / 'app.exe', Path(tmp) / 'app.novo.exe'
+    atual.write_bytes(b'MZ velho'); novo.write_bytes(b'MZ novo')
+    cj.install_update(novo, atual)
+    assert atual.read_bytes() == b'MZ novo' and not novo.exists() and (Path(tmp) / 'app.antigo.exe').read_bytes() == b'MZ velho'
 print('OK - todas as regras conferidas')

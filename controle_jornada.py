@@ -1,7 +1,7 @@
 """Controle de Jornada AGT LOG — primeira versão operacional.
 Dependência: pymupdf. Banco local SQLite com publicação validada em pasta de rede.
 """
-import calendar, unicodedata, contextlib, csv, datetime as dt, hashlib, json, os, re, shutil, sqlite3, sys, tempfile, tkinter as tk
+import calendar, unicodedata, contextlib, csv, datetime as dt, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, tempfile, threading, urllib.request, webbrowser, tkinter as tk
 from pathlib import Path
 from difflib import SequenceMatcher
 from tkinter import ttk, filedialog, messagebox, font as tkfont
@@ -12,6 +12,8 @@ except ImportError:
     fitz = None
 
 APP = 'Controle de Jornada AGT LOG'
+VERSION = '0.1.7'  # a tag do release no GitHub deve ser v + esta versão (ex.: v0.1.8)
+GITHUB_REPO = 'Luiz-tyrone/controle-jornada'  # repositório público: as atualizações saem dos releases
 SERVER = r'\\Servidor-agtlog\doc frota\CONTROLE DE JORNADA\DADOS DO NOVO SISTEMA QUE SUB PLANILHA'
 LOCAL = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AGTLOG' / 'ControleJornada'
 CONFIG = LOCAL / 'config.json'
@@ -254,23 +256,210 @@ def match_employee(name,employees):
 
 
 def payroll(drivers,employees,comp):
-    """drivers: [(placa, nome, totais do mês, inconsistências, código salvo)]. Devolve (linhas TXT, lançados, pendências)."""
+    """drivers: [(motorista, nome, totais do mês, inconsistências, código salvo)]. Devolve (linhas TXT, lançados, pendências)."""
     by_code={};pend=[];codes={e['codigo']:e for e in employees}
-    for plate,name,t,issues,saved in drivers:
+    for key,name,t,issues,saved in drivers:
         d,e=max(0,t['he_direcao']),max(0,t['he_espera'])
-        if issues:pend.append((plate,name,'Dia com duração negativa: conferir antes da folha','','',d,e));continue
+        if issues:pend.append((key,name,'Dia com duração negativa: conferir antes da folha','','',d,e));continue
         if not d and not e:continue
         if saved:kind,emp,score='CADASTRADO',codes.get(saved,{'codigo':saved,'nome':'(código fora do PDF de cadastro)'}),1.0
         else:kind,emp,score=match_employee(name,employees)
         if kind not in ('CADASTRADO','EXATO','PROVAVEL'):
-            pend.append((plate,name,f'Nome divergente ({score:.0%})' if emp else 'Funcionário não encontrado',emp['nome'] if emp else '',emp['codigo'] if emp else '',d,e));continue
-        row=by_code.setdefault(emp['codigo'],{'codigo':emp['codigo'],'nome':emp['nome'],'placas':[],'motoristas':[],'direcao':0,'espera':0,'match':'EXATO'})
-        if row['motoristas']:pend.append((plate,name,'Mesmo código em mais de uma placa: horas somadas',emp['nome'],emp['codigo'],d,e))
-        row['placas'].append(plate);row['motoristas'].append(name);row['direcao']+=d;row['espera']+=e
+            pend.append((key,name,f'Nome divergente ({score:.0%})' if emp else 'Funcionário não encontrado',emp['nome'] if emp else '',emp['codigo'] if emp else '',d,e));continue
+        row=by_code.setdefault(emp['codigo'],{'codigo':emp['codigo'],'nome':emp['nome'],'chaves':[],'motoristas':[],'direcao':0,'espera':0,'match':'EXATO'})
+        if row['motoristas']:pend.append((key,name,'Mesmo código em mais de um motorista: horas somadas',emp['nome'],emp['codigo'],d,e))
+        row['chaves'].append(key);row['motoristas'].append(name);row['direcao']+=d;row['espera']+=e
         if kind!='EXATO':row['match']='CÓDIGO SALVO' if kind=='CADASTRADO' else f'PROVÁVEL {score:.0%}'
     ok=sorted(by_code.values(),key=lambda r:plain(r['nome']))
     lines=[txt_line(r['codigo'],comp,rub,secs) for r in ok for rub,secs in ((RUBRICA_DIRECAO,r['direcao']),(RUBRICA_ESPERA,r['espera'])) if secs>0]
     return lines,ok,pend
+
+
+def driver_key(raw):
+    """Chave do motorista: nome limpo e sem acentos. A placa não entra: o motorista pode trocar de veículo."""
+    return plain(driver_parts(raw)[0])
+
+
+def db():
+    """Conexão com a função SQL chave(), que liga cada jornada ao seu motorista."""
+    con=sqlite3.connect(DB);con.create_function('chave',1,driver_key,deterministic=True);return con
+
+
+# Jornadas com o motorista de cada dia (a.condutor), qualquer que seja a placa.
+JORNADAS='FROM jornadas j JOIN apelidos a ON a.chave=chave(j.motorista)'
+
+
+def link_drivers(con):
+    """Liga cada nome vindo do PDF a um motorista. Nome cortado pelo rastreador ("JOSE EDEVILSON") que é o
+    começo de outro já visto na mesma placa ("JOSE EDEVILSON NOGUEIRA BACELAR") é o mesmo motorista."""
+    known=dict(con.execute('SELECT chave,condutor FROM apelidos'))
+    plates={};raw={}
+    for m,p in con.execute('SELECT motorista,placa FROM jornadas'):
+        k=driver_key(m);plates.setdefault(k,set()).add(p);raw.setdefault(k,m)
+    now=dt.datetime.now().isoformat()
+    for k in sorted(set(plates)-set(known),key=len,reverse=True):  # nomes completos antes dos cortados
+        same={known[o] for o in known if (o.startswith(k+' ') or k.startswith(o+' '))
+              and min(len(k.split()),len(o.split()))>=2 and plates[k]&plates.get(o,set())}
+        name,kind=driver_parts(raw[k])
+        if len(same)==1:
+            cid=same.pop();con.execute('UPDATE condutores SET nome=? WHERE id=? AND length(nome)<?',(name,cid,len(name)))
+        else:cid=con.execute('INSERT INTO condutores(nome,tipo,criado) VALUES(?,?,?)',(name,kind,now)).lastrowid
+        con.execute('INSERT INTO apelidos(chave,condutor) VALUES(?,?)',(k,cid));known[k]=cid
+
+
+# Colunas da lista de motoristas (filtros estilo Excel no título de cada coluna).
+DRIVER_COLS={'nome':'Motorista','tipo':'Tipo','placa':'Placa'}  # placa = placa(s) usada(s) no mês escolhido
+NO_PLATE='(sem jornada no mês)'
+
+
+def month_plates(con,month):
+    """{motorista: [(placa, primeiro dia, último dia), ...]} na ordem de uso. Mais de uma placa = troca no mês."""
+    out={}
+    for cid,p,a,b in con.execute(f'SELECT a.condutor,j.placa,MIN(j.data),MAX(j.data) {JORNADAS} WHERE j.data LIKE ? GROUP BY 1,2 ORDER BY 3,2',(month+'%',)):
+        out.setdefault(cid,[]).append((p,a,b))
+    return out
+
+
+def plates_text(used,days=False):
+    if not used:return 'sem jornadas no mês'
+    return ' → '.join(f'{p} ({a[8:]} a {b[8:]})' if days else p for p,a,b in used)
+
+
+def version_tuple(v):
+    return tuple(int(x) for x in re.findall(r'\d+',v)[:3])
+
+
+def newer_release(rel,current=VERSION):
+    """Release do GitHub mais novo que a versão em uso e com um .exe anexado; senão None."""
+    tag=rel.get('tag_name') or ''
+    exe=next((a for a in rel.get('assets',[]) if a.get('name','').lower().endswith('.exe')),None)
+    if rel.get('draft') or rel.get('prerelease') or not exe or not re.search(r'\d',tag) or version_tuple(tag)<=version_tuple(current):return None
+    return {'versao':tag.lstrip('vV'),'url':exe['browser_download_url'],'tamanho':exe.get('size') or 0,
+            'sha256':(exe.get('digest') or '').removeprefix('sha256:'),'notas':rel.get('body') or '','pagina':rel.get('html_url') or ''}
+
+
+def github_get(url,timeout=10):
+    return urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'ControleJornadaAGTLOG','Accept':'application/vnd.github+json'}),timeout=timeout)
+
+
+def download_update(info,dest,progress=lambda done,total:None):
+    """Baixa o .exe novo e só o aceita se tamanho, SHA-256 (publicado pelo GitHub) e cabeçalho baterem."""
+    part=dest.with_name(dest.name+'.part');h=hashlib.sha256();done=0
+    try:
+        with github_get(info['url'],timeout=30) as r,open(part,'wb') as f:
+            total=int(r.headers.get('Content-Length') or info['tamanho'] or 0)
+            while chunk:=r.read(1<<16):
+                f.write(chunk);h.update(chunk);done+=len(chunk);progress(done,total)
+        if info['tamanho'] and done!=info['tamanho']:raise ValueError('o download veio incompleto.')
+        if info['sha256'] and h.hexdigest()!=info['sha256']:raise ValueError('o arquivo baixado é diferente do publicado (SHA-256).')
+        with open(part,'rb') as f:
+            if f.read(2)!=b'MZ':raise ValueError('o arquivo baixado não é um programa do Windows.')
+        os.replace(part,dest)
+    except BaseException:
+        part.unlink(missing_ok=True);raise
+
+
+def install_update(new,exe):
+    """Troca o .exe em uso pelo novo. O Windows deixa renomear um .exe aberto (mas não apagar)."""
+    old=exe.with_name(exe.stem+'.antigo.exe')
+    old.unlink(missing_ok=True)
+    os.replace(exe,old)
+    try:os.replace(new,exe)
+    except BaseException:
+        os.replace(old,exe);raise
+
+
+def desktop_shortcut(exe,folder=None):
+    """Cria (ou corrige) o atalho na área de trabalho apontando para este .exe. Sem janela, sem aviso."""
+    ps=("$d=if($env:CJ_DIR){$env:CJ_DIR}else{[Environment]::GetFolderPath('Desktop')};"
+        "$l=Join-Path $d ($env:CJ_NAME+'.lnk');$w=New-Object -ComObject WScript.Shell;"
+        "if(-not (Test-Path $l) -or $w.CreateShortcut($l).TargetPath -ne $env:CJ_EXE){"
+        "$s=$w.CreateShortcut($l);$s.TargetPath=$env:CJ_EXE;$s.WorkingDirectory=(Split-Path $env:CJ_EXE);"
+        "$s.IconLocation=$env:CJ_EXE+',0';$s.Description=$env:CJ_NAME;$s.Save()}")
+    exe=os.path.realpath(exe)  # caminho longo (sem ~1), igual ao que o Windows grava no atalho
+    env={**os.environ,'CJ_EXE':exe,'CJ_NAME':APP,'CJ_DIR':str(folder or '')}
+    subprocess.run(['powershell','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',ps],env=env,
+                   capture_output=True,timeout=60,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+
+
+class SheetGrid(tk.Frame):
+    """Grade no estilo planilha: linhas e colunas desenhadas, Dia/Item e cabeçalho fixos.
+    Desenha só as células visíveis, então rola leve mesmo com muitos motoristas."""
+    def __init__(self,parent):
+        super().__init__(parent,bg=CARD)
+        self.font=tkfont.Font(family=MONO,size=10);self.lfont=tkfont.Font(family=FONT,size=9)
+        self.hfont=tkfont.Font(family=FONT+' Semibold',size=9)
+        self.rh=self.font.metrics('linespace')+10;self.hh=self.hfont.metrics('linespace')*2+16
+        self.cw=self.font.measure('00:00:00 – 00:00:00')+24  # acompanha a escala do Windows
+        self.lw=(self.lfont.measure('Mês')+24,self.lfont.measure('Hora extra total')+28)
+        self.cols=[];self.rows=[];self.x=0;self.y=0
+        L=sum(self.lw)
+        mk=lambda **k:tk.Canvas(self,bg=CARD,highlightthickness=0,**k)
+        self.corner=mk(width=L,height=self.hh);self.head=mk(height=self.hh);self.left=mk(width=L);self.body=mk()
+        self.vs=ttk.Scrollbar(self,orient='vertical',command=self.yscroll);self.hs=ttk.Scrollbar(self,orient='horizontal',command=self.xscroll)
+        self.corner.grid(row=0,column=0,sticky='nsew');self.head.grid(row=0,column=1,sticky='ew');self.left.grid(row=1,column=0,sticky='ns')
+        self.body.grid(row=1,column=1,sticky='nsew');self.vs.grid(row=0,column=2,rowspan=2,sticky='ns');self.hs.grid(row=2,column=1,sticky='ew')
+        self.grid_rowconfigure(1,weight=1);self.grid_columnconfigure(1,weight=1)
+        self.body.bind('<Configure>',lambda e:self.draw())
+        for c in (self.corner,self.head,self.left,self.body):
+            c.bind('<MouseWheel>',lambda e:self.yscroll('scroll',-e.delta//120*3,'units'))
+            c.bind('<Shift-MouseWheel>',lambda e:self.xscroll('scroll',-e.delta//120,'units'))
+
+    def set(self,cols,rows):
+        """cols: [(nome, placas)]; rows: [(dia, item, [valor por coluna], fundo, fim_do_bloco)]."""
+        self.cols=cols;self.rows=rows;self.x=self.y=0;self.draw()
+
+    def fit(self,text,font,width):
+        if font.measure(text)<=width:return text
+        while text and font.measure(text+'…')>width:text=text[:-1]
+        return text+'…'
+
+    def view(self):
+        return max(1,self.body.winfo_height()//self.rh),max(1,self.body.winfo_width()//self.cw)
+
+    def yscroll(self,*a):
+        nr,_=self.view();self.y=self._move(a,self.y,nr,len(self.rows));self.draw()
+
+    def xscroll(self,*a):
+        _,nc=self.view();self.x=self._move(a,self.x,nc,len(self.cols));self.draw()
+
+    @staticmethod
+    def _move(a,pos,page,total):
+        pos=round(float(a[1])*total) if a[0]=='moveto' else pos+int(a[1])*(page if a[2]=='pages' else 1)
+        return max(0,min(pos,total-page))
+
+    def draw(self):
+        for c in (self.corner,self.head,self.left,self.body):c.delete('all')
+        nr,nc=self.view();self.y=max(0,min(self.y,len(self.rows)-nr));self.x=max(0,min(self.x,len(self.cols)-nc))
+        rh,cw,hh=self.rh,self.cw,self.hh;l0,l1=self.lw;L=l0+l1
+        rows=self.rows[self.y:self.y+nr+1];cols=self.cols[self.x:self.x+nc+1]
+        W=len(cols)*cw;H=len(rows)*rh;edge='#B9AFC0'
+        # cabeçalho
+        self.corner.create_rectangle(0,0,L,hh,fill=BG,outline='')
+        self.corner.create_text(l0/2,hh/2,text='Dia',font=self.hfont,fill=MUTED);self.corner.create_text(l0+10,hh/2,text='Item',font=self.hfont,fill=MUTED,anchor='w')
+        self.corner.create_line(l0,0,l0,hh,fill=LINE);self.corner.create_line(0,hh-1,L,hh-1,fill=edge);self.corner.create_line(L-1,0,L-1,hh,fill=edge)
+        self.head.create_rectangle(0,0,max(W,self.head.winfo_width()),hh,fill=BG,outline='')
+        for j,(name,plates) in enumerate(cols):
+            x0=j*cw
+            self.head.create_text(x0+cw/2,hh/2-8,text=self.fit(name,self.hfont,cw-12),font=self.hfont,fill=INK)
+            self.head.create_text(x0+cw/2,hh/2+10,text=self.fit(plates,self.lfont,cw-12),font=self.lfont,fill=MUTED)
+            self.head.create_line(x0+cw,0,x0+cw,hh,fill=LINE)
+        self.head.create_line(0,hh-1,max(W,self.head.winfo_width()),hh-1,fill=edge)
+        # corpo
+        for i,(day,item,vals,fill,end) in enumerate(rows):
+            y0=i*rh;y1=y0+rh
+            if fill!=CARD:self.left.create_rectangle(0,y0,L,y1,fill=fill,outline='');self.body.create_rectangle(0,y0,W,y1,fill=fill,outline='')
+            show_day=day if (i==0 or self.rows[self.y+i-1][4]) else ''
+            if show_day:self.left.create_text(l0/2,y0+rh/2,text=show_day,font=self.hfont,fill=INK)
+            self.left.create_text(l0+10,y0+rh/2,text=item,font=self.lfont,fill=INK,anchor='w')
+            for j,v in enumerate(vals[self.x:self.x+nc+1]):
+                if v:self.body.create_text(j*cw+cw/2,y0+rh/2,text=v,font=self.font,fill=ERR if v=='REVISAR' else INK)
+            line=edge if end else LINE
+            self.left.create_line(l0 if not end else 0,y1-1,L,y1-1,fill=line);self.body.create_line(0,y1-1,W,y1-1,fill=line)
+        for j in range(1,len(cols)+1):self.body.create_line(j*cw,0,j*cw,H,fill=LINE)
+        self.left.create_line(l0,0,l0,H,fill=LINE);self.left.create_line(L-1,0,L-1,H,fill=edge)
+        n=len(self.rows);m=len(self.cols)
+        self.vs.set(*((self.y/n,min(1,(self.y+nr)/n)) if n else (0,1)));self.hs.set(*((self.x/m,min(1,(self.x+nc)/m)) if m else (0,1)))
 
 
 def init_db(path):
@@ -283,7 +472,10 @@ def init_db(path):
         CREATE TABLE IF NOT EXISTS auditoria (id INTEGER PRIMARY KEY AUTOINCREMENT,
         instante TEXT, placa TEXT, data TEXT, operacao TEXT, detalhe TEXT);
         CREATE TABLE IF NOT EXISTS motoristas (placa TEXT PRIMARY KEY, nome TEXT NOT NULL, criado TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS importacoes (hash TEXT PRIMARY KEY, arquivo TEXT, instante TEXT, registros INTEGER);''')
+        CREATE TABLE IF NOT EXISTS importacoes (hash TEXT PRIMARY KEY, arquivo TEXT, instante TEXT, registros INTEGER);
+        -- Motorista independente da placa: cada nome vindo do PDF (apelido) aponta para um motorista.
+        CREATE TABLE IF NOT EXISTS condutores (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, tipo TEXT, codigo TEXT, criado TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS apelidos (chave TEXT PRIMARY KEY, condutor INTEGER NOT NULL REFERENCES condutores(id));''')
         # Código do funcionário no Domínio, confirmado uma vez e usado em todos os TXT seguintes.
         if 'codigo' not in [c[1] for c in con.execute('PRAGMA table_info(motoristas)')]:
             con.execute('ALTER TABLE motoristas ADD COLUMN codigo TEXT');con.commit()
@@ -298,7 +490,7 @@ def valid_db(path):
 
 class App:
     def __init__(self,root):
-        self.root=root; self.root.title(APP+' | v0.1.6'); self.root.geometry('1500x850'); self.root.minsize(1150,700); self.root.state('zoomed')
+        self.root=root; self.root.title(f'{APP} | v{VERSION}'); self.root.geometry('1500x850'); self.root.minsize(1150,700); self.root.state('zoomed')
         try:self.root.iconbitmap(default=str(Path(getattr(sys,'_MEIPASS',Path(__file__).parent))/'agt_log.ico'))  # vale também para as janelas filhas
         except tk.TclError:pass
         LOCAL.mkdir(parents=True,exist_ok=True)
@@ -306,6 +498,91 @@ class App:
         self.connected=False
         self.setup_style(); self.build()
         self.root.after(150,self.connect_server)
+        if getattr(sys,'frozen',False):self.root.after(3000,self.background_tasks)  # só no .exe
+
+    def center(self,win):
+        """Centraliza a janela sobre o programa."""
+        win.update_idletasks()
+        x=self.root.winfo_rootx()+(self.root.winfo_width()-win.winfo_reqwidth())//2
+        y=self.root.winfo_rooty()+(self.root.winfo_height()-win.winfo_reqheight())//3
+        win.geometry(f'+{max(0,x)}+{max(0,y)}')
+
+    def background_tasks(self):
+        """Ao abrir o .exe: atalho na área de trabalho e busca de atualização, tudo em segundo plano e em silêncio."""
+        exe=Path(sys.executable)
+        for leftover in (exe.stem+'.antigo.exe',exe.stem+'.novo.exe',exe.stem+'.novo.exe.part'):
+            try:exe.with_name(leftover).unlink(missing_ok=True)
+            except OSError:pass  # versão anterior ainda fechando: apaga na próxima abertura
+        def shortcut():
+            try:desktop_shortcut(exe)
+            except Exception:pass  # sem atalho não impede o uso
+        threading.Thread(target=shortcut,daemon=True).start()
+        found={}
+        def check():
+            try:
+                with github_get(f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest') as r:found['info']=newer_release(json.load(r))
+            except Exception:pass  # sem internet ou GitHub fora: segue sem avisar
+            found['done']=True
+        threading.Thread(target=check,daemon=True).start()
+        def wait():
+            # espera a busca terminar e nenhuma outra janela (ex.: servidor) estar aberta na frente
+            if not found.get('done') or self.root.grab_current():return self.root.after(700,wait)
+            if found.get('info'):self.show_update(found['info'])
+        self.root.after(700,wait)
+
+    def show_update(self,info):
+        """Tela de atualização no visual do sistema."""
+        exe=Path(sys.executable);new=exe.with_name(exe.stem+'.novo.exe')
+        win=tk.Toplevel(self.root);win.title('Atualização disponível');win.configure(bg=CARD);win.resizable(False,False);win.transient(self.root)
+        box=tk.Frame(win,bg=CARD,padx=30,pady=26);box.pack(fill='both',expand=True)
+        if getattr(self,'logo',None):tk.Label(box,image=self.logo,bg=CARD).pack(anchor='w',pady=(0,14))
+        tk.Label(box,text='Nova versão disponível',bg=CARD,fg=INK,font=(FONT,17)).pack(anchor='w')
+        tk.Label(box,text=f'Versão {info["versao"]}  ·  você está usando a versão {VERSION}',bg=CARD,fg=MUTED,font=(FONT,10)).pack(anchor='w',pady=(2,14))
+        notes=[l.strip()[2:].strip() for l in info['notas'].splitlines() if l.strip().startswith(('- ','* '))]
+        if notes:
+            card=tk.Frame(box,bg=BG,padx=16,pady=12);card.pack(fill='x')
+            tk.Label(card,text='O que mudou',bg=BG,fg=MUTED,font=(FONT,9)).pack(anchor='w',pady=(0,4))
+            for n in notes[:8]:tk.Label(card,text='•  '+n,bg=BG,fg=INK,font=(FONT,10),wraplength=460,justify='left').pack(anchor='w',pady=1)
+        status=tk.Label(box,text='O programa fecha e abre de novo sozinho, já atualizado.',bg=CARD,fg=MUTED,font=(FONT,9),wraplength=500,justify='left')
+        status.pack(anchor='w',pady=(14,0))
+        bar=ttk.Progressbar(box,style='Update.Horizontal.TProgressbar',maximum=1,length=500)
+        btns=tk.Frame(box,bg=CARD);btns.pack(fill='x',pady=(18,0))
+        state={'busy':False}
+        win.protocol('WM_DELETE_WINDOW',lambda:None if state['busy'] else win.destroy())
+        def failed(msg):
+            state['busy']=False;bar.pack_forget();status.config(text=f'Não foi possível atualizar: {msg}',fg=ERR)
+            for w in btns.winfo_children():w.destroy()
+            live_button(btns,'Fechar',win.destroy).pack(side='right')
+            if info['pagina']:live_button(btns,'Baixar pelo site',lambda:webbrowser.open(info['pagina'])).pack(side='right',padx=8)
+        def start():
+            state['busy']=True
+            for w in btns.winfo_children():w.destroy()
+            bar.pack(anchor='w',pady=(10,0),before=btns);status.config(text='Baixando a nova versão…',fg=MUTED)
+            prog={'done':0,'total':info['tamanho'] or 1}
+            def work():
+                try:download_update(info,new,lambda d,t:prog.update(done=d,total=t or prog['total']))
+                except Exception as e:prog['error']=str(e) or e.__class__.__name__
+                prog['end']=True
+            threading.Thread(target=work,daemon=True).start()
+            def poll():
+                bar.config(maximum=prog['total'],value=prog['done'])
+                status.config(text=f'Baixando a nova versão…  {prog["done"]/1048576:.1f} de {prog["total"]/1048576:.1f} MB')
+                if not prog.get('end'):return win.after(120,poll)
+                if 'error' in prog:return failed(prog['error'])
+                status.config(text='Instalando…');win.update()
+                try:install_update(new,exe)
+                except OSError as e:
+                    new.unlink(missing_ok=True)
+                    return failed(f'sem permissão para trocar o arquivo nesta pasta ({e.strerror or e}).')
+                # Novo processo independente (PyInstaller): não herdar a pasta temporária deste.
+                subprocess.Popen([str(exe)],cwd=str(exe.parent),env={**os.environ,'PYINSTALLER_RESET_ENVIRONMENT':'1'},close_fds=True)
+                self.root.destroy()
+            poll()
+        live_button(btns,'Atualizar agora',start,True).pack(side='right')
+        live_button(btns,'Depois',win.destroy).pack(side='right',padx=8)
+        win.update_idletasks()
+        win.geometry(f'+{self.root.winfo_rootx()+(self.root.winfo_width()-win.winfo_width())//2}+{self.root.winfo_rooty()+(self.root.winfo_height()-win.winfo_height())//3}')
+        win.grab_set();win.focus_force()
 
     def load_config(self):
         try: return json.loads(CONFIG.read_text(encoding='utf8'))
@@ -333,11 +610,12 @@ class App:
         st.configure('TNotebook',background=CARD,borderwidth=0,bordercolor=CARD,lightcolor=CARD,darkcolor=CARD,tabmargins=(16,0,16,8))
         st.configure('TNotebook.Tab',font=(FONT,10),padding=(14,6),background=CARD,foreground=MUTED,borderwidth=0,lightcolor=CARD,darkcolor=CARD,bordercolor=CARD,focuscolor=CARD)
         st.map('TNotebook.Tab',background=[('selected',BG),('active',BG)],foreground=[('selected',INK),('active',INK)],lightcolor=[('selected',BG)],expand=[('selected',(0,0,0,0))])
+        st.configure('Update.Horizontal.TProgressbar',troughcolor=LINE,background=MINT,bordercolor=LINE,lightcolor=MINT,darkcolor=MINT,thickness=10)
         for o in ('Vertical','Horizontal'):
             st.configure(o+'.TScrollbar',background='#D6D6D6',troughcolor=CARD,bordercolor=CARD,arrowcolor=MUTED,lightcolor='#D6D6D6',darkcolor='#D6D6D6',gripcount=0)
 
     def build(self):
-        self.selected_plate = None
+        self.selected_driver = None
         lbl=lambda parent,text,fg=INK,size=10,bg=CARD,**kw:tk.Label(parent,text=text,bg=bg,fg=fg,font=kw.pop('font',(FONT,size)),**kw)
         head=tk.Frame(self.root,bg=CARD,height=64);head.pack(fill='x');head.pack_propagate(False)
         tk.Frame(self.root,bg=LINE,height=1).pack(fill='x')
@@ -358,12 +636,16 @@ class App:
         foot=tk.Frame(self.root,bg=BG);foot.pack(side='bottom',fill='x',padx=24,pady=(0,10))
         self.network=lbl(foot,'● Aguardando servidor',WARN,font=(FONT,9,'bold'),padx=10,pady=3);self.network.pack(side='left',padx=(0,12))
         lbl(foot,'Duplo clique em um dia para conferir ou editar. Fechamento financeiro em validação.',MUTED,9,bg=BG).pack(side='left')
-        lbl(foot,'Desenvolvido por Luiz Tyrone  ·  v0.1.6',MUTED,9,bg=BG).pack(side='right')
+        lbl(foot,f'Desenvolvido por Luiz Tyrone  ·  v{VERSION}',MUTED,9,bg=BG).pack(side='right')
         content=tk.Frame(self.root,bg=BG)
 
-        side=tk.Frame(content,bg=CARD,width=440,highlightthickness=1,highlightbackground=LINE);side.pack(side='left',fill='y',padx=(0,16));side.pack_propagate(False)
+        side=tk.Frame(content,bg=CARD,width=max(560,int(self.root.winfo_screenwidth()*.32)),highlightthickness=1,highlightbackground=LINE);side.pack(side='left',fill='y',padx=(0,16));side.pack_propagate(False)
         lbl(side,'Motoristas',font=(FONT,12,'bold')).pack(anchor='w',padx=20,pady=(18,0))
-        self.driver_count=lbl(side,'0 motoristas cadastrados',MUTED,9);self.driver_count.pack(anchor='w',padx=20)
+        counts=tk.Frame(side,bg=CARD);counts.pack(fill='x',padx=20)
+        self.driver_count=lbl(counts,'0 motoristas cadastrados',MUTED,9);self.driver_count.pack(side='left')
+        self.clear_filters=lbl(counts,'Limpar filtros',ERR,9,cursor='hand2')  # aparece só com filtro ativo
+        self.clear_filters.bind('<Button-1>',lambda e:(self.col_filters.update(dict.fromkeys(DRIVER_COLS)),self.search.set(''),self.refresh_drivers()))
+        self.col_filters=dict.fromkeys(DRIVER_COLS);self.driver_sort=('nome',False);self.driver_rows=[]
         box=tk.Frame(side,bg=BG,highlightthickness=1,highlightbackground=LINE);box.pack(fill='x',padx=20,pady=(14,12))
         lbl(box,'⌕',MUTED,13,bg=BG).pack(side='left',padx=(10,0))
         self.search=tk.StringVar();entry=tk.Entry(box,textvariable=self.search,font=(FONT,10),relief='flat',bg=BG,fg=INK,insertbackground=INK)
@@ -371,24 +653,28 @@ class App:
         entry.bind('<FocusIn>',lambda e:box.config(highlightbackground=INK));entry.bind('<FocusOut>',lambda e:box.config(highlightbackground=LINE))
         listbox=tk.Frame(side,bg=CARD);listbox.pack(fill='both',expand=True,padx=(12,8),pady=(0,12))
         self.driver_tree=ttk.Treeview(listbox,columns=('nome','tipo','placa'),show='headings',selectmode='browse')
-        self.driver_tree.heading('nome',text='Motorista',anchor='w');self.driver_tree.heading('tipo',text='Tipo',anchor='w');self.driver_tree.heading('placa',text='Placa')
-        self.driver_tree.column('nome',width=230,minwidth=160,anchor='w');self.driver_tree.column('tipo',width=80,minwidth=70,anchor='w');self.driver_tree.column('placa',width=80,minwidth=75,anchor='center')
+        for c,label in DRIVER_COLS.items():
+            self.driver_tree.heading(c,text=label+'  ▾',anchor='center' if c=='placa' else 'w',command=lambda c=c:self.column_filter(c))
+        self.driver_tree.column('nome',width=200,minwidth=140,anchor='w');self.driver_tree.column('tipo',width=80,minwidth=70,anchor='w');self.driver_tree.column('placa',width=tkfont.Font(family=FONT,size=10).measure('SDI9G25 +1')+28,minwidth=75,anchor='center')
         sc=ttk.Scrollbar(listbox,orient='vertical',command=self.driver_tree.yview);self.driver_tree.configure(yscrollcommand=sc.set)
         self.driver_tree.pack(side='left',fill='both',expand=True);sc.pack(side='right',fill='y')
         self.driver_tree.bind('<<TreeviewSelect>>',self.on_driver_select);hover_rows(self.driver_tree)
+        self.driver_tree.tag_configure('troca',background='#FFF4D1')  # trocou de placa no mês
 
         right=tk.Frame(content,bg=BG);right.pack(side='left',fill='both',expand=True)
         top=tk.Frame(right,bg=CARD,highlightthickness=1,highlightbackground=LINE);top.pack(fill='x',pady=(0,16))
         row=tk.Frame(top,bg=CARD);row.pack(fill='x',padx=24,pady=(18,16))
-        who=tk.Frame(row,bg=CARD);who.pack(side='left')
+        who=tk.Frame(row,bg=CARD)  # empacotado depois dos filtros: texto longo não empurra os botões para fora
         self.driver_title=lbl(who,'Selecione um motorista',font=(FONT,18));self.driver_title.pack(anchor='w')
-        self.driver_sub=lbl(who,'Escolha um motorista na lista à esquerda para visualizar o controle diário.',MUTED);self.driver_sub.pack(anchor='w')
-        self.summary=lbl(who,'',MUTED,9);self.summary.pack(anchor='w')
+        self.driver_sub=lbl(who,'Escolha um motorista na lista à esquerda para visualizar o controle diário.',MUTED,justify='left');self.driver_sub.pack(anchor='w')
+        self.summary=lbl(who,'',MUTED,9,justify='left');self.summary.pack(anchor='w')
         filt=tk.Frame(row,bg=CARD);filt.pack(side='right')
         self.month=tk.StringVar(value=dt.date.today().strftime('%Y-%m'));self.month_buttons=[]
         self.month.trace_add('write',lambda *a:[b.set_text(self.month_text()) for b in self.month_buttons])
         self.month_button(filt).pack(side='left',padx=(0,8))
         live_button(filt,'↻  Atualizar',self.refresh).pack(side='left')
+        who.pack(side='left',fill='x',expand=True)
+        who.bind('<Configure>',lambda e:[w.config(wraplength=max(200,e.width)) for w in (self.driver_sub,self.summary)])
         tk.Frame(top,bg=LINE,height=1).pack(fill='x')
         stats=tk.Frame(top,bg=CARD);stats.pack(fill='x')
         self.metric_labels=[]
@@ -407,10 +693,10 @@ class App:
         self.tabs=tabs
         panel=tk.Frame(daily_tab,bg=CARD);panel.pack(fill='both',expand=True)
 
-        cols=('data','inicio','fim','movimento','parado','espera','status')
+        cols=('data','placa','inicio','fim','movimento','parado','espera','status')
         self.tree=ttk.Treeview(panel,columns=cols,show='headings',selectmode='browse',style='Mono.Treeview')
-        headers=['Data','Início','Fim','Em movimento','Parado ligado','T. espera','Situação']
-        widths=[100,90,90,125,125,100,125]
+        headers=['Data','Placa','Início','Fim','Em movimento','Parado ligado','T. espera','Situação']
+        widths=[110,95,90,90,125,125,100,125]
         for c,h,width in zip(cols,headers,widths):self.tree.heading(c,text=h);self.tree.column(c,width=width,minwidth=75,anchor='center')
         vs=ttk.Scrollbar(panel,orient='vertical',command=self.tree.yview);hs=ttk.Scrollbar(panel,orient='horizontal',command=self.tree.xview)
         self.tree.configure(yscrollcommand=vs.set,xscrollcommand=hs.set)
@@ -433,9 +719,6 @@ class App:
 
     def build_sheet(self,lbl,content):
         """Segunda página: todos os motoristas lado a lado, como a aba RELATÓRIO da planilha."""
-        st=ttk.Style()
-        for name,font in (('Sheet.Treeview',(MONO,10)),('SheetL.Treeview',(FONT,9))):
-            st.configure(name,font=font,rowheight=26);st.layout(name,st.layout('Treeview'))
         sheet=tk.Frame(self.root,bg=BG);self.pages={'motoristas':content,'planilha':sheet}
         top=tk.Frame(sheet,bg=CARD,highlightthickness=1,highlightbackground=LINE);top.pack(fill='x',pady=(0,16))
         row=tk.Frame(top,bg=CARD);row.pack(fill='x',padx=24,pady=18)
@@ -445,37 +728,7 @@ class App:
         filt=tk.Frame(row,bg=CARD);filt.pack(side='right')
         self.month_button(filt).pack(side='left',padx=(0,8));live_button(filt,'↻  Atualizar',self.refresh).pack(side='left')
         live_button(filt,'↓  Gerar TXT contábil',self.export_txt,True).pack(side='left',padx=(8,0))
-        body=tk.Frame(sheet,bg=CARD,highlightthickness=1,highlightbackground=LINE);body.pack(fill='both',expand=True)
-        self.sheet_left=ttk.Treeview(body,columns=('dia','item'),show='headings',selectmode='none',style='SheetL.Treeview')
-        self.sheet_left.heading('dia',text='Dia');self.sheet_left.heading('item',text='Item',anchor='w')
-        self.sheet_left.column('dia',width=50,stretch=False,anchor='center');self.sheet_left.column('item',width=tkfont.Font(family=FONT,size=9).measure('Hora extra total')+28,stretch=False,anchor='w')
-        self.sheet=ttk.Treeview(body,show='headings',selectmode='none',style='Sheet.Treeview')
-        # Só a grade principal rola; a coluna Dia/Item acompanha (fica fixa na horizontal).
-        vs=ttk.Scrollbar(body,orient='vertical',command=lambda *a:(self.sheet.yview(*a),self.sheet_left.yview(*a)))
-        # O Treeview redesenha TODAS as colunas a cada rolagem (inclusive fora da tela); por isso só as visíveis ficam em displaycolumns.
-        self.sheet_hs=ttk.Scrollbar(body,orient='horizontal',command=self.sheet_xscroll);self.sheet_cols=[];self.sheet_x=0;self.sheet_colw=1
-        self.sheet.configure(yscrollcommand=lambda f,l:(vs.set(f,l),self.sheet_left.yview_moveto(f)))
-        self.sheet.bind('<Configure>',lambda e:self.sheet_view())
-        self.sheet_left.bind('<MouseWheel>',lambda e:(self.sheet.yview_scroll(-e.delta//120,'units'),'break')[1])
-        self.sheet.bind('<Shift-MouseWheel>',lambda e:self.sheet_xscroll('scroll',-e.delta//120,'units'))
-        for t in (self.sheet_left,self.sheet):
-            t.tag_configure('par',background='#F8F7F9');t.tag_configure('total',background='#FFF4D1')
-        self.sheet_left.grid(row=0,column=0,sticky='ns');tk.Frame(body,bg=LINE,width=1).grid(row=0,column=1,sticky='ns')
-        self.sheet.grid(row=0,column=2,sticky='nsew');vs.grid(row=0,column=3,sticky='ns');self.sheet_hs.grid(row=1,column=2,sticky='ew')
-        body.grid_rowconfigure(0,weight=1);body.grid_columnconfigure(2,weight=1)
-
-    def sheet_view(self):
-        """Mostra só as colunas de motoristas que cabem na tela, a partir de self.sheet_x."""
-        n=len(self.sheet_cols);k=max(1,self.sheet.winfo_width()//self.sheet_colw+1)
-        self.sheet_x=max(0,min(self.sheet_x,n-k+1));cols=self.sheet_cols[self.sheet_x:self.sheet_x+k]
-        self.sheet.configure(displaycolumns=cols or '#all')
-        self.sheet_hs.set(*((self.sheet_x/n,min(1,(self.sheet_x+k-1)/n)) if n else (0,1)))
-
-    def sheet_xscroll(self,*a):
-        k=max(1,self.sheet.winfo_width()//self.sheet_colw)
-        if a[0]=='moveto':self.sheet_x=round(float(a[1])*len(self.sheet_cols))
-        else:self.sheet_x+=int(a[1])*(k if a[2]=='pages' else 1)
-        self.sheet_view()
+        self.grid_sheet=SheetGrid(sheet);self.grid_sheet.configure(highlightthickness=1,highlightbackground=LINE);self.grid_sheet.pack(fill='both',expand=True)
 
     def show_page(self,key):
         self.page=key
@@ -485,39 +738,34 @@ class App:
         if key=='planilha':self.refresh_sheet()
 
     def refresh_sheet(self):
-        for t in (self.sheet_left,self.sheet):t.delete(*t.get_children())
-        if not self.connected:return
+        if not self.connected:return self.grid_sheet.set([],[])
         month=self.month.get();y,m=map(int,month.split('-'))
-        with sqlite3.connect(DB) as con:
-            rows=con.execute('SELECT placa,data,inicio,fim,movimento,parado,espera,status FROM jornadas WHERE data LIKE ? ORDER BY data',(month+'%',)).fetchall()
-            names=dict(con.execute('SELECT placa,nome FROM motoristas'))
-        by={}
-        for r in rows:by.setdefault(r[0],{})[r[1]]=r[1:]
-        name=lambda p:driver_parts(names.get(p,p))[0]
-        plates=sorted(by,key=name)
-        self.sheet.configure(columns=plates,displaycolumns='#all');self.sheet_cols=plates;self.sheet_x=0
-        width=tkfont.Font(family=MONO,size=10).measure('00:00:00 – 00:00:00')+24  # largura acompanha a escala do Windows
-        for p in plates:self.sheet.heading(p,text=f'{name(p)}  ·  {p}');self.sheet.column(p,width=width,minwidth=width,stretch=False,anchor='center')
-        self.sheet_colw=width;self.sheet_view()
+        with db() as con:
+            rows=con.execute(f'SELECT a.condutor,j.data,j.inicio,j.fim,j.movimento,j.parado,j.espera,j.status {JORNADAS} WHERE j.data LIKE ? ORDER BY j.data,j.placa',(month+'%',)).fetchall()
+            names=dict(con.execute('SELECT id,nome FROM condutores'));used=month_plates(con,month)
+        by={}  # motorista -> dia -> jornadas (duas se trocou de placa no mesmo dia)
+        for r in rows:by.setdefault(r[0],{}).setdefault(r[1],[]).append(r[1:])
+        ids=sorted(by,key=lambda c:plain(names[c]))
         fmt=lambda v:hhmmss(v) if v>=0 else 'REVISAR'
         # r = (data,inicio,fim,movimento,parado,espera,status); t = month_metrics de um único dia.
-        items=[('Período jornada',lambda r,t:f'{r[1]} – {r[2]}' if r[1] and r[2] else 'Espera fixa' if r[6]=='ESPERA FIXA' else ''),
+        items=[('Período jornada',lambda r,t:'Duas placas no dia' if r[6]=='DUAS' else f'{r[1]} – {r[2]}' if r[1] and r[2] else 'Espera fixa' if r[6]=='ESPERA FIXA' else ''),
                ('Em movimento',lambda r,t:fmt(t['direcao'])),
                ('Parado ligado',lambda r,t:'00:00:00' if r[6]=='ESPERA FIXA' else r[4]),
                ('T. espera',lambda r,t:fmt(t['espera'])),('HE em T espera',lambda r,t:fmt(t['he_espera'])),('TE + TD',lambda r,t:fmt(t['tdte'])),
                ('Intervalo',lambda r,t:fmt(t['intervalo'])),('Descanso',lambda r,t:fmt(t['descanso'])),
                ('Hora extra total',lambda r,t:fmt(t['he_total']))]
+        grid=[]
         for d in range(1,calendar.monthrange(y,m)[1]+1):
-            date=f'{month}-{d:02d}';tag=('par',) if d%2==0 else ()
-            cells={p:(by[p][date],month_metrics([by[p][date]])[0]) for p in plates if date in by[p]}
+            date=f'{month}-{d:02d}';fill='#F8F7F9' if d%2==0 else CARD
+            day=lambda L:L[0] if len(L)==1 else (date,'','',hhmmss(sum(seconds(x[3]) for x in L)),hhmmss(sum(seconds(x[4]) for x in L)),'','DUAS')
+            cells={c:(day(by[c][date]),month_metrics(by[c][date])[0]) for c in ids if date in by[c]}
             for i,(label,get) in enumerate(items):
-                self.sheet_left.insert('','end',values=(f'{d:02d}' if i==0 else '',label),tags=tag)
-                self.sheet.insert('','end',values=[get(*cells[p]) if p in cells else '' for p in plates],tags=tag)
-        totals={p:month_metrics(list(by[p].values()))[0] for p in plates}
+                grid.append((f'{d:02d}',label,[get(*cells[c]) if c in cells else '' for c in ids],fill,i==len(items)-1))
+        totals={c:month_metrics([r for L in by[c].values() for r in L])[0] for c in ids}
         for i,(key,label) in enumerate(RESUMO):
-            self.sheet_left.insert('','end',values=('Mês' if i==0 else '',label),tags=('total',))
-            self.sheet.insert('','end',values=[fmt(totals[p][key]) for p in plates],tags=('total',))
-        self.sheet_sub.config(text=f'{MESES[m-1]} de {y}  ·  {len(plates)} motoristas  ·  {len(rows)} dias lançados')
+            grid.append(('Mês',label,[fmt(totals[c][key]) for c in ids],'#FFF4D1',i==len(RESUMO)-1))
+        self.grid_sheet.set([(names[c],plates_text(used.get(c))) for c in ids],grid)
+        self.sheet_sub.config(text=f'{MESES[m-1]} de {y}  ·  {len(ids)} motoristas  ·  {len(rows)} dias lançados')
 
     def month_text(self):
         y,m=self.month.get().split('-')
@@ -556,70 +804,127 @@ class App:
                 b.grid(row=i//4,column=i%4,padx=4,pady=4,sticky='ew')
                 if (y,i+1) not in filled and (y,i+1)!=(cur_y,cur_m):b.set_fg(MUTED)  # mês sem jornadas
             for c in range(4):grid.grid_columnconfigure(c,weight=1,uniform='m',minsize=110)
+            self.center(win)  # a tela de meses é maior que a de anos
         def choose(y,m):
             self.month.set(f'{y}-{m:02d}');win.destroy();self.refresh()
-        years_screen()
+        years_screen();self.center(win)
 
     def sync_drivers(self):
         with sqlite3.connect(DB) as con:
+            # Tabela antiga (por placa) mantida só para versões anteriores do programa que ainda estejam em uso.
             con.execute('INSERT OR IGNORE INTO motoristas(placa,nome,criado) SELECT placa,motorista,MIN(atualizado) FROM jornadas GROUP BY placa')
+            link_drivers(con)
 
     def add_driver(self):
         if not self.connected:return messagebox.showwarning('Servidor','Conecte ao servidor primeiro.')
-        win=tk.Toplevel(self.root);win.title('Cadastrar motorista');win.geometry('430x290');win.transient(self.root);win.grab_set()
+        win=tk.Toplevel(self.root);win.title('Cadastrar motorista');win.geometry('430x240');win.transient(self.root);win.grab_set()
         frm=ttk.Frame(win,padding=22);frm.pack(fill='both',expand=True)
         ttk.Label(frm,text='Novo motorista',font=('Segoe UI',15,'bold')).pack(anchor='w',pady=(0,15))
-        ttk.Label(frm,text='Nome completo').pack(anchor='w');name=tk.StringVar();ttk.Entry(frm,textvariable=name).pack(fill='x',pady=(3,12))
-        ttk.Label(frm,text='Placa do veículo (identificador do cadastro)').pack(anchor='w');plate=tk.StringVar();ttk.Entry(frm,textvariable=plate).pack(fill='x',pady=(3,12))
+        ttk.Label(frm,text='Nome completo (a placa vem de cada jornada)').pack(anchor='w');name=tk.StringVar();ttk.Entry(frm,textvariable=name).pack(fill='x',pady=(3,12))
         def save():
-            n=normalize(name.get());pl=plate.get().strip().upper()
-            if not n or not re.fullmatch(r'[A-Z]{3}[0-9][A-Z0-9][0-9]{2}',pl):return messagebox.showerror('Cadastro','Informe o nome e uma placa válida.',parent=win)
+            n=driver_parts(normalize(name.get()).upper())[0];k=plain(n)
+            if len(k.split())<2:return messagebox.showerror('Cadastro','Informe o nome completo do motorista.',parent=win)
             try:
-                with sqlite3.connect(DB) as con:
-                    con.execute('INSERT INTO motoristas(placa,nome,criado) VALUES(?,?,?) ON CONFLICT(placa) DO UPDATE SET nome=excluded.nome',(pl,n,dt.datetime.now().isoformat()))
-                self.publish();self.selected_plate=pl;win.destroy();self.refresh()
+                with db() as con:
+                    if con.execute('SELECT 1 FROM apelidos WHERE chave=?',(k,)).fetchone():raise ValueError('Este motorista já está cadastrado.')
+                    cid=con.execute('INSERT INTO condutores(nome,tipo,criado) VALUES(?,?,?)',(n,'NÃO INFORMADO',dt.datetime.now().isoformat())).lastrowid
+                    con.execute('INSERT INTO apelidos(chave,condutor) VALUES(?,?)',(k,cid))
+                self.publish();self.selected_driver=str(cid);win.destroy();self.refresh()
             except Exception as exc:messagebox.showerror('Cadastro',str(exc),parent=win)
         live_button(frm,'Salvar cadastro',save,True).pack(fill='x',pady=10)
 
     def on_driver_select(self,event=None):
         selection=self.driver_tree.selection()
         if not selection:return
-        self.selected_plate=selection[0]
+        self.selected_driver=selection[0]
         self.refresh_days()
 
     def refresh_drivers(self):
         if not self.connected:return
-        previous=self.selected_plate
+        previous=self.selected_driver
         self.driver_tree.delete(*self.driver_tree.get_children())
-        with sqlite3.connect(DB) as con:
-            drivers=con.execute('SELECT placa,nome FROM motoristas ORDER BY nome').fetchall()
+        with db() as con:
+            used=month_plates(con,self.month.get())
+            self.driver_rows=[(cid,n,kind or '',[p for p,_,_ in used.get(cid,[])]) for cid,n,kind in con.execute('SELECT id,nome,tipo FROM condutores')]
+        col,rev=self.driver_sort;f=self.col_filters
+        # plain(): ordem alfabética com acentos no lugar certo
+        key={'nome':lambda d:plain(d[1]),'tipo':lambda d:(plain(d[2]),plain(d[1])),'placa':lambda d:(d[3][-1] if d[3] else '~',plain(d[1]))}[col]
         term=self.search.get().strip().upper();visible=0
-        for pl,n in drivers:
-            clean,kind=driver_parts(n)
-            if term and term not in (n+' '+pl).upper():continue
-            self.driver_tree.insert('', 'end',iid=pl,values=(clean,kind,pl));visible+=1
-        self.driver_count.config(text=f'{visible} motoristas cadastrados')
+        for cid,n,kind,pl in sorted(self.driver_rows,key=key,reverse=rev):
+            if term and term not in (n+' '+' '.join(pl)).upper():continue
+            if (f['nome'] is not None and n not in f['nome']) or (f['tipo'] is not None and kind not in f['tipo']):continue
+            if f['placa'] is not None and not set(pl or [NO_PLATE])&f['placa']:continue
+            shown=(pl[-1]+(f' +{len(pl)-1}' if len(pl)>1 else '')) if pl else '—'
+            self.driver_tree.insert('', 'end',iid=str(cid),values=(n,kind,shown),tags=('troca',) if len(pl)>1 else ());visible+=1
+        for c,label in DRIVER_COLS.items():  # ▼ = coluna com filtro; seta indica a ordenação
+            arrow=(' ↓' if rev else ' ↑') if c==col and (col!='nome' or rev) else ''
+            self.driver_tree.heading(c,text=label+arrow+('  ▼' if f[c] is not None else '  ▾'))
+        kinds=[k for _,_,k,_ in self.driver_rows]
+        self.driver_tree.column('tipo',width=min(170,max([tkfont.Font(family=FONT,size=10).measure(k) for k in kinds+['Tipo  ▾']])+20))
+        filtered=any(v is not None for v in f.values()) or bool(term)
+        self.driver_count.config(text=f'{visible} de {len(self.driver_rows)} motoristas' if filtered else f'{visible} motoristas cadastrados')
+        if filtered:self.clear_filters.pack(side='left',padx=(10,0))
+        else:self.clear_filters.pack_forget()
         if previous and self.driver_tree.exists(previous):
             self.driver_tree.selection_set(previous);self.driver_tree.see(previous)
         elif visible and not previous:
-            first=self.driver_tree.get_children()[0];self.selected_plate=first;self.driver_tree.selection_set(first)
-        elif previous and not self.driver_tree.exists(previous):self.selected_plate=None
+            first=self.driver_tree.get_children()[0];self.selected_driver=first;self.driver_tree.selection_set(first)
+        elif previous and not self.driver_tree.exists(previous):self.selected_driver=None
+
+    def column_filter(self,col):
+        """Filtro estilo Excel: ordenar, buscar e marcar os valores da coluna."""
+        if not self.connected:return
+        tree=self.driver_tree;cols=list(tree['columns']);current=self.col_filters[col]
+        values=sorted({v for _,n,k,pl in self.driver_rows for v in ((pl or [NO_PLATE]) if col=='placa' else [n if col=='nome' else k])},key=plain)
+        win=tk.Toplevel(self.root);win.title('Filtrar: '+DRIVER_COLS[col]);win.configure(bg=CARD);win.transient(self.root);win.resizable(False,False)
+        win.geometry(f'+{tree.winfo_rootx()+sum(tree.column(c,"width") for c in cols[:cols.index(col)])}+{tree.winfo_rooty()+30}')
+        box=tk.Frame(win,bg=CARD,padx=14,pady=12);box.pack(fill='both',expand=True)
+        def sort(rev):self.driver_sort=(col,rev);win.destroy();self.refresh_drivers()
+        top=tk.Frame(box,bg=CARD);top.pack(fill='x')
+        live_button(top,'A → Z',lambda:sort(False)).pack(side='left',padx=(0,6));live_button(top,'Z → A',lambda:sort(True)).pack(side='left')
+        q=tk.StringVar();ent=ttk.Entry(box,textvariable=q);ent.pack(fill='x',pady=(10,6));ent.focus_set()
+        lst=tk.Frame(box,bg=CARD,highlightthickness=1,highlightbackground=LINE);lst.pack(fill='both')
+        cv=tk.Canvas(lst,bg=CARD,highlightthickness=0,width=300,height=280);sb=ttk.Scrollbar(lst,orient='vertical',command=cv.yview)
+        inner=tk.Frame(cv,bg=CARD);cv.create_window(0,0,window=inner,anchor='nw');cv.configure(yscrollcommand=sb.set)
+        inner.bind('<Configure>',lambda e:cv.configure(scrollregion=cv.bbox('all')))
+        cv.pack(side='left',fill='both',expand=True);sb.pack(side='right',fill='y')
+        win.bind('<MouseWheel>',lambda e:cv.yview_scroll(-e.delta//120,'units'))
+        shown=lambda:[v for v in values if plain(q.get()) in plain(v)]
+        marks={v:tk.BooleanVar(value=current is None or v in current) for v in values};every=tk.BooleanVar()
+        check=lambda text,var,cmd:tk.Checkbutton(inner,text=text,variable=var,command=cmd,anchor='w',font=(FONT,10),fg=INK,bg=CARD,activebackground=BG,selectcolor=CARD)
+        check('(Selecionar tudo)',every,lambda:[marks[v].set(every.get()) for v in shown()]).pack(fill='x')
+        rows={v:check(v,marks[v],lambda:every.set(all(marks[x].get() for x in shown()))) for v in values}
+        def draw(*a):
+            vis=shown()
+            for w in rows.values():w.pack_forget()
+            for v in vis:rows[v].pack(fill='x')
+            every.set(bool(vis) and all(marks[v].get() for v in vis));cv.yview_moveto(0)
+        q.trace_add('write',draw);draw()
+        def apply():  # como no Excel: com busca, ficam só os itens marcados que aparecem na busca
+            keep={v for v in shown() if marks[v].get()}
+            self.col_filters[col]=None if keep==set(values) else keep;win.destroy();self.refresh_drivers()
+        def clear():self.col_filters[col]=None;win.destroy();self.refresh_drivers()
+        bar=tk.Frame(box,bg=CARD);bar.pack(fill='x',pady=(10,0))
+        live_button(bar,'OK',apply,True).pack(side='right');live_button(bar,'Limpar filtro',clear).pack(side='right',padx=6)
+        ent.bind('<Return>',lambda e:apply());win.bind('<Escape>',lambda e:win.destroy());win.grab_set()
 
     def refresh_days(self):
         self.tree.delete(*self.tree.get_children())
-        if not self.connected or not self.selected_plate:
+        if not self.connected or not self.selected_driver:
             self.driver_title.config(text='Selecione um motorista');self.driver_sub.config(text='Escolha um cadastro na lista à esquerda.');self.summary.config(text='');
             for _,label in self.metric_labels:label.config(text='—')
             return
-        with sqlite3.connect(DB) as con:
-            driver=con.execute('SELECT nome FROM motoristas WHERE placa=?',(self.selected_plate,)).fetchone()
-            rows=con.execute('SELECT data,inicio,fim,movimento,parado,espera,status FROM jornadas WHERE placa=? AND data LIKE ? ORDER BY data',(self.selected_plate,self.month.get().strip()+'%',)).fetchall()
-        clean,kind=driver_parts(driver[0] if driver else 'Motorista')
+        month=self.month.get().strip()
+        with db() as con:
+            clean,kind=con.execute('SELECT nome,tipo FROM condutores WHERE id=?',(self.selected_driver,)).fetchone() or ('Motorista','')
+            rows=con.execute(f'SELECT j.data,j.placa,j.inicio,j.fim,j.movimento,j.parado,j.espera,j.status {JORNADAS} WHERE a.condutor=? AND j.data LIKE ? ORDER BY j.data,j.placa',(self.selected_driver,month+'%')).fetchall()
+            used=month_plates(con,month).get(int(self.selected_driver),[])
         self.driver_title.config(text=clean)
-        self.driver_sub.config(text=f'{kind}  •  Placa {self.selected_plate}  •  Histórico diário de jornada')
+        swap=len(used)>1
+        self.driver_sub.config(text=f'{kind}  •  '+(f'Troca de placa no mês: {plates_text(used,True)}' if swap else f'Placa {plates_text(used)}'),fg=WARN if swap else MUTED)
         for r in rows:self.tree.insert('', 'end',values=(dt.date.fromisoformat(r[0]).strftime('%d/%m/%Y'),)+r[1:],tags=('espera',) if r[-1]=='ESPERA FIXA' else ())
         self.summary.config(text=f'{len(rows)} dias  |  {sum(r[-1]=="ESPERA FIXA" for r in rows)} esperas fixas')
-        totals,issues=month_metrics(rows)
+        totals,issues=month_metrics([(r[0],)+r[2:] for r in rows])
         for key,label in self.metric_labels:label.config(text=hhmmss(totals[key]) if totals[key]>=0 else 'REVISAR')
         self.metric_warning.config(text=('ATENÇÃO: '+str(len(issues))+' dia(s) com inconsistência; não usar para folha.' if issues else 'Cálculos conforme fórmulas do Excel; validar antes do fechamento de folha.'),fg=ERR if issues else MUTED)
 
@@ -722,19 +1027,20 @@ class App:
         if not self.connected:messagebox.showwarning('Servidor','Conecte ao servidor antes de importar.');return
         files=filedialog.askopenfilenames(title='Selecionar PDF(s) do rastreador',filetypes=[('Arquivos PDF','*.pdf')])
         if not files:return
-        total=0;errors=[]
+        total=0;errors=[];months=set()
         for file in files:
             try:
                 data=Path(file).read_bytes();digest=hashlib.sha256(data).hexdigest()
                 with sqlite3.connect(DB) as con:
                     if con.execute('SELECT 1 FROM importacoes WHERE hash=?',(digest,)).fetchone():continue
-                records=parse_pdf(file)
+                records=parse_pdf(file);months|={r['data'][:7] for r in records}
                 with sqlite3.connect(DB) as con:
                     for r in records:
                         old=con.execute('SELECT inicio,fim,movimento,parado,espera,status FROM jornadas WHERE placa=? AND data=?',(r['placa'],r['data'])).fetchone()
                         if old and old==tuple(r[k] for k in ('inicio','fim','movimento','parado','espera','status')):continue
-                        # Não sobrescrever correções manuais automaticamente.
-                        if old and con.execute("SELECT 1 FROM auditoria WHERE placa=? AND data=? AND operacao='EDICAO MANUAL' LIMIT 1",(r['placa'],r['data'])).fetchone():continue
+                        # Não sobrescrever correções manuais nem recriar dia excluído à mão.
+                        manual=con.execute("SELECT operacao FROM auditoria WHERE placa=? AND data=? AND operacao IN ('EDICAO MANUAL','EXCLUSAO') ORDER BY id DESC LIMIT 1",(r['placa'],r['data'])).fetchone()
+                        if manual and (old or manual[0]=='EXCLUSAO'):continue
                         con.execute('''INSERT INTO jornadas(placa,data,motorista,inicio,fim,movimento,parado,espera,status,fonte,atualizado)
                         VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(placa,data) DO UPDATE SET
                         motorista=excluded.motorista,inicio=excluded.inicio,fim=excluded.fim,movimento=excluded.movimento,
@@ -750,17 +1056,28 @@ class App:
                 self.publish()
             except Exception as e:errors.append(f'{Path(file).name}: {e}')
         self.refresh()
-        messagebox.showinfo('Importação',f'{total} jornadas inseridas/atualizadas.\n'+('\n'.join(errors) if errors else 'Dados salvos no servidor.'))
+        swaps=[]
+        with db() as con:
+            names=dict(con.execute('SELECT id,nome FROM condutores'))
+            for mo in sorted(months):
+                swaps+=[f'{names[c]}: {plates_text(u,True)}' for c,u in month_plates(con,mo).items() if len(u)>1]
+        note=('\n\nTroca de placa identificada:\n'+'\n'.join(swaps[:15])+(f'\n... e mais {len(swaps)-15}' if len(swaps)>15 else '')) if swaps else ''
+        messagebox.showinfo('Importação',f'{total} jornadas inseridas/atualizadas.\n'+('\n'.join(errors) if errors else 'Dados salvos no servidor.')+note)
 
     def edit_record(self,event=None):
         selected=self.tree.selection()
         if not selected:return
-        row=self.tree.item(selected[0],'values');date=dt.datetime.strptime(row[0],'%d/%m/%Y').date().isoformat();plate=self.selected_plate
-        win=tk.Toplevel(self.root);win.title('Conferir jornada | '+self.driver_title.cget('text'));win.geometry('440x470');win.transient(self.root);win.grab_set()
+        row=self.tree.item(selected[0],'values');date=dt.datetime.strptime(row[0],'%d/%m/%Y').date().isoformat();plate=row[1]
+        current=self.driver_title.cget('text')
+        with db() as con:drivers=dict(con.execute('SELECT nome,id FROM condutores ORDER BY nome'))
+        win=tk.Toplevel(self.root);win.title('Conferir jornada | '+current);win.minsize(460,0);win.transient(self.root);win.grab_set()  # altura se ajusta ao conteúdo
         frm=ttk.Frame(win,padding=18);frm.pack(fill='both',expand=True)
-        ttk.Label(frm,text=f'{self.driver_title.cget("text")}  •  {row[0]}',font=('Segoe UI',12,'bold')).pack(anchor='w',pady=(0,12))
+        ttk.Label(frm,text=f'{current}  •  {row[0]}  •  placa {plate}',font=('Segoe UI',12,'bold'),wraplength=420).pack(anchor='w',pady=(0,12))
+        # Se o rastreador não registrou a troca, o dia pode ser passado para o motorista certo.
+        ttk.Label(frm,text='Motorista deste dia').pack(anchor='w');who=tk.StringVar(value=current)
+        ttk.Combobox(frm,textvariable=who,values=list(drivers),state='readonly').pack(fill='x',pady=(1,7))
         entries={}
-        for label,val in [('Hora início',row[1]),('Hora fim',row[2]),('Em movimento',row[3]),('Parado ligado',row[4])]:
+        for label,val in [('Hora início',row[2]),('Hora fim',row[3]),('Em movimento',row[4]),('Parado ligado',row[5])]:
             ttk.Label(frm,text=label).pack(anchor='w');var=tk.StringVar(value=val);ttk.Entry(frm,textvariable=var).pack(fill='x',pady=(1,7));entries[label]=var
         ttk.Label(frm,text='Motivo da alteração (obrigatório)').pack(anchor='w');reason=tk.StringVar();ttk.Entry(frm,textvariable=reason).pack(fill='x',pady=5)
         def save():
@@ -771,22 +1088,39 @@ class App:
                     if t and not re.fullmatch(r'\d{2}:\d{2}:\d{2}',t):raise ValueError('Use o formato HH:MM:SS.')
                 if not mov or not stop:raise ValueError('Movimento e parado ligado são obrigatórios.')
                 wait=seconds(mov)<3600 or not(start and end)
-                with sqlite3.connect(DB) as con:
+                detail=reason.get().strip()
+                with db() as con:
+                    if who.get()!=current:
+                        con.execute('INSERT OR IGNORE INTO apelidos(chave,condutor) VALUES(?,?)',(driver_key(who.get()),drivers[who.get()]))
+                        con.execute('UPDATE jornadas SET motorista=? WHERE placa=? AND data=?',(who.get(),plate,date))
+                        detail+=f' | motorista: {current} -> {who.get()}'
                     con.execute('UPDATE jornadas SET inicio=?,fim=?,movimento=?,parado=?,espera=?,status=?,atualizado=? WHERE placa=? AND data=?',
                                 ('' if wait else start,'' if wait else end,mov,stop,'10:00:00' if wait else '00:00:00','ESPERA FIXA' if wait else 'JORNADA',dt.datetime.now().isoformat(),plate,date))
                     con.execute('INSERT INTO auditoria(instante,placa,data,operacao,detalhe) VALUES(?,?,?,?,?)',
-                                (dt.datetime.now().isoformat(),plate,date,'EDICAO MANUAL',reason.get().strip()))
+                                (dt.datetime.now().isoformat(),plate,date,'EDICAO MANUAL',detail))
                 self.publish();self.refresh();win.destroy()
             except Exception as e:messagebox.showerror('Não foi possível salvar',str(e),parent=win)
-        live_button(frm,'Salvar alteração no servidor',save,True).pack(fill='x',pady=14)
+        def delete():
+            try:
+                if not reason.get().strip():raise ValueError('Informe o motivo da exclusão.')
+                if not messagebox.askyesno('Excluir dia',f'Excluir o dia {row[0]} da placa {plate} ({current})?\n\nO dia sai dos cálculos e do TXT, e não volta ao importar o PDF de novo.',icon='warning',parent=win):return
+                with db() as con:
+                    con.execute('DELETE FROM jornadas WHERE placa=? AND data=?',(plate,date))
+                    con.execute('INSERT INTO auditoria(instante,placa,data,operacao,detalhe) VALUES(?,?,?,?,?)',  # valores guardados na auditoria
+                                (dt.datetime.now().isoformat(),plate,date,'EXCLUSAO',f'{reason.get().strip()} | {current} | '+' '.join(row[2:])))
+                self.publish();self.refresh();win.destroy()
+            except Exception as e:messagebox.showerror('Não foi possível excluir',str(e),parent=win)
+        live_button(frm,'Salvar alteração no servidor',save,True).pack(fill='x',pady=(14,6))
+        rm=live_button(frm,'Excluir este dia',delete);rm.pack(fill='x');rm.set_fg(ERR)
+        self.center(win)
 
     def export_csv(self):
         if not self.connected:return
         dest=filedialog.asksaveasfilename(defaultextension='.csv',filetypes=[('CSV','*.csv')],initialfile='jornadas_'+self.month.get()+'.csv')
         if not dest:return
-        if not self.selected_plate:return messagebox.showwarning('Exportação','Selecione um motorista primeiro.')
-        with sqlite3.connect(DB) as con:
-            rows=con.execute('SELECT data,motorista,placa,inicio,fim,movimento,parado,espera,status FROM jornadas WHERE placa=? AND data LIKE ? ORDER BY data',(self.selected_plate,self.month.get()+'%')).fetchall()
+        if not self.selected_driver:return messagebox.showwarning('Exportação','Selecione um motorista primeiro.')
+        with db() as con:
+            rows=con.execute(f'SELECT j.data,j.motorista,j.placa,j.inicio,j.fim,j.movimento,j.parado,j.espera,j.status {JORNADAS} WHERE a.condutor=? AND j.data LIKE ? ORDER BY j.data,j.placa',(self.selected_driver,self.month.get()+'%')).fetchall()
         with open(dest,'w',encoding='utf-8-sig',newline='') as f:
             w=csv.writer(f,delimiter=';');w.writerow(['Data','Motorista','Placa','Início','Fim','Em movimento','Parado ligado','T. espera','Regra']);w.writerows(rows)
         messagebox.showinfo('Exportação',f'Arquivo exportado:\n{dest}')
@@ -804,12 +1138,13 @@ class App:
         except Exception as e:return messagebox.showerror('Cadastro de funcionários',str(e))
         self.save_config(cadastro_pdf=cadastro)
         month=self.month.get();y,m=month.split('-')
-        with sqlite3.connect(DB) as con:
-            rows=con.execute('SELECT placa,data,inicio,fim,movimento,parado,espera,status FROM jornadas WHERE data LIKE ? ORDER BY data',(month+'%',)).fetchall()
-            cad={pl:(n,c) for pl,n,c in con.execute('SELECT placa,nome,codigo FROM motoristas')}
+        with db() as con:
+            rows=con.execute(f'SELECT a.condutor,j.data,j.inicio,j.fim,j.movimento,j.parado,j.espera,j.status {JORNADAS} WHERE j.data LIKE ? ORDER BY j.data',(month+'%',)).fetchall()
+            cad={cid:(n,c) for cid,n,c in con.execute('SELECT id,nome,codigo FROM condutores')}
+            used=month_plates(con,month)
         by={}
         for r in rows:by.setdefault(r[0],[]).append(r[1:])
-        drivers=[(p,driver_parts(cad.get(p,(p,))[0])[0],*month_metrics(days),(cad.get(p,(p,None))[1] or '')) for p,days in by.items()]
+        drivers=[(cid,cad[cid][0],*month_metrics(days),cad[cid][1] or '') for cid,days in by.items()]
         try:lines,ok,pend=payroll(drivers,employees,y+m)
         except ValueError as e:return messagebox.showerror('TXT contábil',str(e))
         win=tk.Toplevel(self.root);win.title(f'TXT contábil | {MESES[int(m)-1]} de {y}');win.geometry(f'{int(win.winfo_screenwidth()*.8)}x{int(win.winfo_screenheight()*.8)}');win.configure(bg=CARD);win.transient(self.root)
@@ -819,11 +1154,11 @@ class App:
         bar=tk.Frame(frm,bg=CARD);bar.pack(side='bottom',fill='x',pady=(12,0))  # rodapé primeiro: nunca é cortado
         tk.Label(frm,text='Duplo clique em uma linha para informar ou corrigir o código do funcionário. O código fica salvo para os próximos meses.',bg=CARD,fg=MUTED,font=(FONT,9)).pack(side='bottom',anchor='w',pady=(8,0))
         tabs=ttk.Notebook(frm);tabs.pack(fill='both',expand=True)
-        def set_code(plate,name,suggest):
+        def set_code(cid,name,suggest):
             # O código fica salvo no cadastro do motorista (servidor): nos próximos meses ele entra sozinho no TXT.
             dlg=tk.Toplevel(win);dlg.title('Código no Domínio');dlg.configure(bg=CARD);dlg.transient(win);dlg.grab_set()
             box=tk.Frame(dlg,bg=CARD,padx=22,pady=18);box.pack(fill='both',expand=True)
-            tk.Label(box,text=f'{name}  ·  placa {plate}',bg=CARD,fg=INK,font=(FONT,12)).pack(anchor='w')
+            tk.Label(box,text=f'{name}  ·  {plates_text(used.get(cid))}',bg=CARD,fg=INK,font=(FONT,12)).pack(anchor='w')
             tk.Label(box,text='Código do funcionário no Domínio (deixe vazio para voltar à busca pelo nome):',bg=CARD,fg=MUTED,font=(FONT,9)).pack(anchor='w',pady=(8,4))
             var=tk.StringVar(value=suggest);ent=ttk.Entry(box,textvariable=var,font=(MONO,11));ent.pack(fill='x');ent.focus_set()
             hint=tk.Label(box,text='',bg=CARD,fg=MUTED,font=(FONT,9));hint.pack(anchor='w',pady=(4,0))
@@ -834,8 +1169,8 @@ class App:
                 if c and (not c.isdigit() or len(c)>10):return messagebox.showerror('Código','Use só números, até 10 dígitos.',parent=dlg)
                 try:
                     with sqlite3.connect(DB) as con:
-                        con.execute('INSERT INTO motoristas(placa,nome,criado,codigo) VALUES(?,?,?,?) ON CONFLICT(placa) DO UPDATE SET codigo=excluded.codigo',(plate,name,dt.datetime.now().isoformat(),c or None))
-                        con.execute('INSERT INTO auditoria(instante,placa,data,operacao,detalhe) VALUES(?,?,?,?,?)',(dt.datetime.now().isoformat(),plate,'','CODIGO DOMINIO',c or 'removido'))
+                        con.execute('UPDATE condutores SET codigo=? WHERE id=?',(c or None,cid))
+                        con.execute('INSERT INTO auditoria(instante,placa,data,operacao,detalhe) VALUES(?,?,?,?,?)',(dt.datetime.now().isoformat(),'','','CODIGO DOMINIO',f'{name}: {c or "removido"}'))
                     self.publish()
                 except Exception as e:return messagebox.showerror('Código',str(e),parent=dlg)
                 dlg.destroy();win.destroy();self.export_txt()
@@ -850,7 +1185,7 @@ class App:
             for i,row in enumerate(data):t.insert('','end',iid=str(i),values=row)
         table(f'Vão para o TXT ({len(ok)})',[('c','Código',80),('n','Funcionário (cadastro)',260),('p','Motorista (sistema)',260),('d','HE direção',100),('e','HE espera',100),('m','Identificação',110)],
               [(r['codigo'],r['nome'],' + '.join(r['motoristas']),hhmmss(r['direcao']),hhmmss(r['espera']),r['match']) for r in ok],
-              [(r['placas'][0],r['motoristas'][0],r['codigo']) for r in ok])
+              [(r['chaves'][0],r['motoristas'][0],r['codigo']) for r in ok])
         table(f'Pendências ({len(pend)})',[('n','Motorista (sistema)',230),('mo','Motivo',300),('s','Sugestão do cadastro',230),('c','Código',70),('d','HE direção',90),('e','HE espera',90)],
               [(n,mo,s,c,hhmmss(d),hhmmss(e)) for _,n,mo,s,c,d,e in pend],[(pl,n,c) for pl,n,_,_,c,_,_ in pend])
         def save():

@@ -1,10 +1,30 @@
-CONTROLE DE JORNADA AGT LOG — v0.1.6
+CONTROLE DE JORNADA AGT LOG — v0.1.7
 
 COMO USAR
 1. Feche o programa anterior.
 2. Abra a pasta "dist" e execute "Controle de Jornada AGT LOG.exe".
    (Para recompilar: dê dois cliques em GERAR_EXE.bat.)
 3. Não apague a pasta de dados do servidor nem o banco local.
+
+VERSÃO 0.1.7
+- Motorista separado da placa: cada dia fica ligado ao motorista do PDF, não ao veículo.
+  Troca de placa no mês aparece na lista (linha amarela, "+1"), no cartão do motorista
+  e no aviso ao importar PDF. A jornada diária mostra a placa de cada dia.
+- Nome cortado pelo rastreador ("JOSE EDEVILSON") é unido ao nome completo da mesma placa.
+- TXT contábil soma as horas por motorista; o código do Domínio fica salvo no motorista.
+- Conferir jornada: dá para passar o dia para outro motorista (fica na auditoria).
+- Cadastrar motorista pede só o nome. Lista de motoristas em ordem alfabética.
+- Filtros estilo Excel na lista de motoristas: clique no título (Motorista, Tipo, Placa)
+  para ordenar A-Z/Z-A, buscar e marcar valores. "Limpar filtros" desliga todos.
+- Atualização automática: ao abrir, o programa consulta em silêncio o último release do
+  GitHub (Luiz-tyrone/controle-jornada). Se houver versão nova, mostra a tela "Nova versão
+  disponível"; ao confirmar, baixa, confere o SHA-256, troca o .exe e reabre sozinho.
+  Para lançar: release com tag vX.Y.Z (igual a VERSION no código) e o .exe anexado.
+- Atalho "Controle de Jornada AGT LOG" criado/corrigido na área de trabalho ao abrir.
+- Conferir jornada: botão "Excluir este dia" (motivo obrigatório, fica na auditoria com os
+  valores apagados). Dia excluído não volta ao importar o PDF de novo.
+- Planilha do mês com linhas de grade, cabeçalho com nome e placa(s) e Dia/Item fixos.
+- Seletor de mês e janela de conferência abrem centralizados.
 
 VERSÃO 0.1.6
 - Ícone do programa e das janelas com o logo AGT LOG (antes aparecia uma pena).
