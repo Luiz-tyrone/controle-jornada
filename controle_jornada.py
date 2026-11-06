@@ -1,7 +1,7 @@
 """Controle de Jornada AGT LOG — primeira versão operacional.
 Dependência: pymupdf. Banco local SQLite com publicação validada em pasta de rede.
 """
-import calendar, unicodedata, contextlib, csv, datetime as dt, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, tempfile, threading, urllib.request, webbrowser, tkinter as tk
+import calendar, unicodedata, contextlib, csv, datetime as dt, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, tempfile, threading, time, urllib.request, webbrowser, tkinter as tk
 from pathlib import Path
 from difflib import SequenceMatcher
 from tkinter import ttk, filedialog, messagebox, font as tkfont
@@ -12,7 +12,7 @@ except ImportError:
     fitz = None
 
 APP = 'Controle de Jornada AGT LOG'
-VERSION = '0.1.8'  # a tag do release no GitHub deve ser v + esta versão (ex.: v0.1.8)
+VERSION = '0.1.9'  # a tag do release no GitHub deve ser v + esta versão (ex.: v0.1.8)
 GITHUB_REPO = 'Luiz-tyrone/controle-jornada'  # repositório público: as atualizações saem dos releases
 SERVER = r'\\Servidor-agtlog\doc frota\CONTROLE DE JORNADA\DADOS DO NOVO SISTEMA QUE SUB PLANILHA'
 LOCAL = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AGTLOG' / 'ControleJornada'
@@ -656,6 +656,7 @@ class App:
             t.bind('<Button-1>',lambda e,k=key:self.show_page(k))
             t.bind('<Enter>',lambda e,t=t:(fade(t,dict(bg=BG),140),t.config(fg=INK)))
             t.bind('<Leave>',lambda e,t=t,k=key:(fade(t,dict(bg=BG if self.page==k else CARD),200),t.config(fg=INK if self.page==k else MUTED)))
+        self.marker=tk.Frame(nav,bg=MINT,height=3)  # linha amarela da aba atual (desliza na troca de página)
         actions=tk.Frame(head,bg=CARD);actions.pack(side='right',padx=24)
         for text,fn,primary in [('↑  Importar PDF',self.import_pdf,True),('+  Cadastrar motorista',self.add_driver,False),('↓  Exportar CSV',self.export_csv,False),('Servidor  →',self.choose_server,False)]:
             live_button(actions,text,fn,primary).pack(side='left',padx=(8,0))
@@ -663,7 +664,9 @@ class App:
         self.network=lbl(foot,'● Aguardando servidor',WARN,font=(FONT,9,'bold'),padx=10,pady=3);self.network.pack(side='left',padx=(0,12))
         lbl(foot,'Duplo clique em um dia para conferir ou editar. Fechamento financeiro em validação.',MUTED,9,bg=BG).pack(side='left')
         lbl(foot,f'Desenvolvido por Luiz Tyrone  ·  v{VERSION}',MUTED,9,bg=BG).pack(side='right')
-        content=tk.Frame(self.root,bg=BG)
+        # Palco das páginas: elas ficam lado a lado e deslizam (place), o palco recorta o que sai.
+        self.stage=tk.Frame(self.root,bg=BG);self.stage.pack(fill='both',expand=True);self.page=None;self._sliding=False;self.sheet_dirty=True
+        content=tk.Frame(self.stage,bg=BG)
 
         side=tk.Frame(content,bg=CARD,width=max(560,int(self.root.winfo_screenwidth()*.32)),highlightthickness=1,highlightbackground=LINE);side.pack(side='left',fill='y',padx=(0,16));side.pack_propagate(False)
         lbl(side,'Motoristas',font=(FONT,12,'bold')).pack(anchor='w',padx=20,pady=(18,0))
@@ -745,7 +748,7 @@ class App:
 
     def build_sheet(self,lbl,content):
         """Segunda página: todos os motoristas lado a lado, como a aba RELATÓRIO da planilha."""
-        sheet=tk.Frame(self.root,bg=BG);self.pages={'motoristas':content,'planilha':sheet}
+        sheet=tk.Frame(self.stage,bg=BG);self.pages={'motoristas':content,'planilha':sheet}
         top=tk.Frame(sheet,bg=CARD,highlightthickness=1,highlightbackground=LINE);top.pack(fill='x',pady=(0,16))
         row=tk.Frame(top,bg=CARD);row.pack(fill='x',padx=24,pady=18)
         who=tk.Frame(row,bg=CARD);who.pack(side='left')
@@ -756,15 +759,39 @@ class App:
         live_button(filt,'↓  Gerar TXT contábil',self.export_txt,True).pack(side='left',padx=(8,0))
         self.grid_sheet=SheetGrid(sheet);self.grid_sheet.configure(highlightthickness=1,highlightbackground=LINE);self.grid_sheet.pack(fill='both',expand=True)
 
+    def place_page(self,page,dx=0):
+        page.place(x=24+dx,y=16,relwidth=1,relheight=1,width=-48,height=-32)
+
+    def marker_at(self,key):
+        t=self.page_tabs[key];return t.winfo_x()+10,max(1,t.winfo_width()-20)
+
     def show_page(self,key):
+        """Troca de página: a linha amarela desliza entre as abas e a página desliza para o lado (≈280 ms)."""
+        old=self.page
+        if key==old or self._sliding:return
         self.page=key
-        for p in self.pages.values():p.pack_forget()
-        self.pages[key].pack(fill='both',expand=True,padx=24,pady=16)
         for k,t in self.page_tabs.items():t.config(bg=BG if k==key else CARD,fg=INK if k==key else MUTED)
-        if key=='planilha':self.refresh_sheet()
+        if key=='planilha' and self.sheet_dirty:self.refresh_sheet()  # só remonta se os dados mudaram
+        new=self.pages[key]
+        if old is None:  # abertura do programa: sem animação
+            self.place_page(new)
+            self.root.after_idle(lambda:self.marker.place(x=self.marker_at(key)[0],rely=1,anchor='sw',width=self.marker_at(key)[1],height=3))
+            return
+        prev=self.pages[old];order=list(self.pages);d=1 if order.index(key)>order.index(old) else -1
+        W=self.stage.winfo_width();(x0,w0),(x1,w1)=self.marker_at(old),self.marker_at(key)
+        self._sliding=True;new.lift();t0=time.perf_counter();self.slide_frames=0
+        def step():
+            k=min(1,(time.perf_counter()-t0)/0.28);e=1-(1-k)**3  # 280 ms fixos; desacelera no fim
+            self.slide_frames+=1
+            self.place_page(new,round(d*W*(1-e)));self.place_page(prev,round(-d*W*e))
+            self.marker.place(x=round(x0+(x1-x0)*e),width=round(w0+(w1-w0)*e))
+            if k<1:return self.root.after(8,step)
+            prev.place_forget();self._sliding=False
+        step()
 
     def refresh_sheet(self):
         if not self.connected:return self.grid_sheet.set([],[])
+        self.sheet_dirty=False
         month=self.month.get();y,m=map(int,month.split('-'))
         with db() as con:
             rows=con.execute(f'SELECT a.condutor,j.data,j.inicio,j.fim,j.movimento,j.parado,j.espera,j.status {JORNADAS} WHERE j.data LIKE ? ORDER BY j.data,j.placa',(month+'%',)).fetchall()
@@ -1048,6 +1075,7 @@ class App:
     def refresh(self):
         if not self.connected:return
         self.refresh_drivers();self.refresh_days()
+        self.sheet_dirty=True  # dados ou mês podem ter mudado: a planilha remonta quando for aberta
         if self.page=='planilha':self.refresh_sheet()
 
     def import_pdf(self):

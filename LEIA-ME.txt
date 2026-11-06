@@ -1,10 +1,17 @@
-CONTROLE DE JORNADA AGT LOG — v0.1.8
+CONTROLE DE JORNADA AGT LOG — v0.1.9
 
 COMO USAR
 1. Feche o programa anterior.
 2. Abra a pasta "dist" e execute "Controle de Jornada AGT LOG.exe".
    (Para recompilar: dê dois cliques em GERAR_EXE.bat.)
 3. Não apague a pasta de dados do servidor nem o banco local.
+
+VERSÃO 0.1.9
+- Troca entre Motoristas e Planilha do mês com animação: a linha amarela desliza entre as
+  abas e a página desliza para o lado (cerca de 0,3 s).
+- A Planilha do mês só é remontada quando os dados ou o mês mudam (troca de aba mais rápida).
+- O .exe dos releases passa a ser gerado pelo próprio GitHub (Actions), não mais no computador:
+  basta criar o release com a tag vX.Y.Z (igual a VERSION no código).
 
 VERSÃO 0.1.8
 - Espelho do servidor em cada computador (só de ida: o servidor alimenta, nunca o contrário):
