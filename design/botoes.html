@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Botões vivos · modelos para o Controle de jornada</title>
+<style>
+:root{--bg:#fff;--surface:#f3f3f3;--ink:#232323;--muted:#686868;--line:#e2e2e2;--mint:#a1ffcb;
+  --in:140ms;--out:200ms;--ease:cubic-bezier(.2,.8,.2,1);--font:"Segoe UI",system-ui,sans-serif}
+*{box-sizing:border-box} body{margin:0;background:var(--surface);color:var(--ink);font:400 15px/1.5 var(--font)}
+.wrap{max-width:1240px;margin:0 auto;padding:40px 32px 56px}
+h1{font-size:28px;font-weight:600;letter-spacing:-.02em;margin:0 0 4px} .lead{color:var(--muted);margin:0 0 32px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.card{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:24px;display:flex;flex-direction:column;gap:20px}
+.card h2{font-size:16px;font-weight:600;margin:0;display:flex;gap:10px;align-items:baseline}
+.card h2 b{font:600 13px Consolas,monospace;background:var(--ink);color:var(--mint);border-radius:5px;padding:2px 8px}
+.card p{margin:4px 0 0;color:var(--muted);font-size:14px}
+.demo{display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:24px 16px;background:var(--surface);border-radius:8px;min-height:96px}
+.tag{font-size:13px;font-weight:600;padding:3px 10px;border-radius:99px;align-self:flex-start}
+.yes{background:var(--mint)} .part{background:#fff1c2;color:#5c4300}
+
+/* base comum */
+.b{position:relative;overflow:hidden;font:600 14px var(--font);border-radius:6px;padding:10px 18px;cursor:pointer;
+  border:1px solid var(--line);background:var(--bg);color:var(--ink);display:inline-flex;align-items:center;gap:8px;isolation:isolate}
+.b.p{background:var(--ink);color:#fff;border-color:var(--ink)}
+.b:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+
+/* 1 · atual: cor suave + anel menta */
+.m1{transition:background-color var(--out) var(--ease),box-shadow var(--out) var(--ease),border-color var(--out) var(--ease)}
+.m1:hover{transition-duration:var(--in);background:#eee;border-color:#a7a7a7}
+.m1.p:hover{background:#3d3d3d;box-shadow:0 0 0 3px var(--mint)}
+.m1:active{background:#e2e2e2} .m1.p:active{background:#111}
+
+/* 2 · elevação */
+.m2{transition:transform var(--out) var(--ease),box-shadow var(--out) var(--ease),background-color var(--out)}
+.m2:hover{transform:translateY(-3px);box-shadow:0 8px 18px -8px rgba(35,35,35,.45);transition-duration:var(--in)}
+.m2:active{transform:translateY(1px);box-shadow:0 1px 2px rgba(35,35,35,.2);transition-duration:80ms}
+
+/* 3 · preenchimento que desliza */
+.m3::before{content:"";position:absolute;inset:0;background:var(--mint);transform:scaleX(0);transform-origin:left;transition:transform 260ms var(--ease);z-index:-1}
+.m3:hover::before{transform:scaleX(1)} .m3{transition:color 260ms} .m3.p:hover{color:var(--ink)}
+.m3:active{filter:brightness(.95)}
+
+/* 4 · seta que avança */
+.m4 .ar{transition:transform var(--out) var(--ease)} .m4:hover .ar{transform:translateX(5px);transition-duration:var(--in)}
+.m4 .up{transition:transform var(--out) var(--ease)} .m4:hover .up{transform:translateY(-3px)}
+.m4{transition:background-color var(--out)} .m4:hover{background:#eee} .m4.p:hover{background:#3d3d3d}
+
+/* 5 · contorno que se desenha */
+.m5{border-color:transparent;box-shadow:inset 0 0 0 1px var(--line)}
+.m5 svg.edge{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+.m5 rect{fill:none;stroke:var(--ink);stroke-width:2;stroke-dasharray:var(--len);stroke-dashoffset:var(--len);transition:stroke-dashoffset 420ms var(--ease)}
+.m5.p rect{stroke:var(--mint)} .m5.p{box-shadow:none}
+.m5:hover rect{stroke-dashoffset:0}
+
+/* 6 · onda no clique */
+.m6 .rip{position:absolute;border-radius:50%;transform:scale(0);background:rgba(161,255,203,.7);animation:rip 550ms var(--ease) forwards;pointer-events:none;z-index:-1}
+.m6:not(.p) .rip{background:rgba(35,35,35,.14)}
+@keyframes rip{to{transform:scale(1);opacity:0}}
+.m6{transition:background-color var(--out)} .m6:hover{background:#eee} .m6.p:hover{background:#3d3d3d}
+
+/* 7 · sublinhado que cresce (botão leve) */
+.m7{border-color:transparent;background:transparent;padding:10px 4px}
+.m7 span{background:linear-gradient(currentColor,currentColor) left bottom/0 2px no-repeat;padding-bottom:3px;transition:background-size 240ms var(--ease)}
+.m7:hover span{background-size:100% 2px}
+.m7.p{background:transparent;color:var(--ink);border-color:transparent} .m7.p span{background-image:linear-gradient(var(--mint),var(--mint));background-size:100% 2px}
+.m7.p:hover span{background-image:linear-gradient(var(--ink),var(--ink))}
+
+/* 8 · brilho que passa */
+.m8::after{content:"";position:absolute;top:0;bottom:0;width:45%;left:-60%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.55),transparent);transform:skewX(-18deg)}
+.m8:not(.p)::after{background:linear-gradient(100deg,transparent,rgba(161,255,203,.9),transparent)}
+.m8:hover::after{left:120%;transition:left 650ms var(--ease)}
+.m8:active{transform:scale(.98)}
+
+/* 9 · texto que rola */
+.m9 .roll{display:inline-grid;overflow:hidden;height:1.5em}
+.m9 .roll i{font-style:normal;grid-area:1/1;transition:transform 260ms var(--ease)}
+.m9 .roll i+i{transform:translateY(110%)}
+.m9:hover .roll i:first-child{transform:translateY(-110%)} .m9:hover .roll i+i{transform:translateY(0)}
+.m9{transition:background-color var(--out)} .m9:hover{background:#eee} .m9.p:hover{background:#3d3d3d}
+
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:0s!important;animation:none!important}}
+@media (max-width:980px){.grid{grid-template-columns:1fr 1fr}} @media (max-width:640px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Botões vivos: escolha um modelo</h1>
+  <p class="lead">Passe o mouse e clique em cada botão. Cada modelo mostra o botão principal (escuro) e o comum (branco), nas cores do sistema.</p>
+  <div class="grid">
+
+    <div class="card"><div><h2><b>1</b>Cor suave + anel menta</h2><p>O que o programa usa hoje: a cor muda devagar e o principal ganha um anel menta.</p></div>
+      <div class="demo"><button class="b p m1">↑ Importar PDF</button><button class="b m1">↓ Exportar CSV</button></div>
+      <span class="tag yes">Já está no programa</span></div>
+
+    <div class="card"><div><h2><b>2</b>Elevação</h2><p>O botão sobe 3px com uma sombra e afunda quando clicado, como uma tecla.</p></div>
+      <div class="demo"><button class="b p m2">↑ Importar PDF</button><button class="b m2">↓ Exportar CSV</button></div>
+      <span class="tag yes">Dá para fazer no programa</span></div>
+
+    <div class="card"><div><h2><b>3</b>Preenchimento deslizante</h2><p>Uma faixa menta enche o botão da esquerda para a direita.</p></div>
+      <div class="demo"><button class="b p m3">↑ Importar PDF</button><button class="b m3">↓ Exportar CSV</button></div>
+      <span class="tag yes">Dá para fazer no programa</span></div>
+
+    <div class="card"><div><h2><b>4</b>Ícone que se move</h2><p>O texto fica parado e só o ícone anda na direção da ação.</p></div>
+      <div class="demo"><button class="b p m4"><span class="up">↑</span> Importar PDF</button><button class="b m4">Servidor <span class="ar">→</span></button></div>
+      <span class="tag yes">Dá para fazer no programa</span></div>
+
+    <div class="card"><div><h2><b>5</b>Contorno que se desenha</h2><p>Uma linha percorre a borda até fechar o contorno em volta do botão.</p></div>
+      <div class="demo"><button class="b p m5">↑ Importar PDF<svg class="edge"><rect x="1" y="1" rx="5"/></svg></button><button class="b m5">↓ Exportar CSV<svg class="edge"><rect x="1" y="1" rx="5"/></svg></button></div>
+      <span class="tag yes">Dá para fazer no programa</span></div>
+
+    <div class="card"><div><h2><b>6</b>Onda no clique</h2><p>Ao clicar, uma onda se espalha a partir do ponto onde o mouse tocou.</p></div>
+      <div class="demo"><button class="b p m6">↑ Importar PDF</button><button class="b m6">↓ Exportar CSV</button></div>
+      <span class="tag part">No programa sai mais simples</span></div>
+
+    <div class="card"><div><h2><b>7</b>Sublinhado que cresce</h2><p>Botão leve, sem caixa: uma linha cresce embaixo do texto. Bom para ações secundárias.</p></div>
+      <div class="demo"><button class="b p m7"><span>Importar PDF</span></button><button class="b m7"><span>Exportar CSV</span></button></div>
+      <span class="tag yes">Dá para fazer no programa</span></div>
+
+    <div class="card"><div><h2><b>8</b>Brilho que passa</h2><p>Um reflexo atravessa o botão em diagonal, uma vez a cada passada do mouse.</p></div>
+      <div class="demo"><button class="b p m8">↑ Importar PDF</button><button class="b m8">↓ Exportar CSV</button></div>
+      <span class="tag part">No programa sai mais simples</span></div>
+
+    <div class="card"><div><h2><b>9</b>Texto que rola</h2><p>O texto sobe e sai, e o mesmo texto entra por baixo.</p></div>
+      <div class="demo"><button class="b p m9"><span class="roll"><i>↑ Importar PDF</i><i>↑ Importar PDF</i></span></button><button class="b m9"><span class="roll"><i>↓ Exportar CSV</i><i>↓ Exportar CSV</i></span></button></div>
+      <span class="tag part">No programa sai mais simples</span></div>
+
+  </div>
+</div>
+<script>
+// 5: tamanho do contorno de cada botão
+document.querySelectorAll('.m5').forEach(b=>{const r=b.querySelector('rect'),w=b.offsetWidth-2,h=b.offsetHeight-2;r.setAttribute('width',w);r.setAttribute('height',h);b.style.setProperty('--len',2*(w+h))});
+// 6: onda a partir do ponto do clique
+document.querySelectorAll('.m6').forEach(b=>b.addEventListener('pointerdown',e=>{const r=b.getBoundingClientRect(),s=Math.max(r.width,r.height)*2.2,el=document.createElement('span');el.className='rip';el.style.cssText=`width:${s}px;height:${s}px;left:${e.clientX-r.left-s/2}px;top:${e.clientY-r.top-s/2}px`;b.appendChild(el);setTimeout(()=>el.remove(),600)}));
+</script>
+</body>
+</html>

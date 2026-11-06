@@ -1,0 +1,15 @@
+# gerados pelo PyInstaller (o .exe vai como Release no GitHub)
+build/
+dist/
+*.spec
+__pycache__/
+# dados e arquivos locais
+*.db
+*.pdf
+*.xlsm
+*.xlsx
+# ferramentas do editor
+.claude/
+.agents/
+.taste-skill/
+skills-lock.json

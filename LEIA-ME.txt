@@ -1,0 +1,35 @@
+CONTROLE DE JORNADA AGT LOG — v0.1.5
+
+COMO USAR
+1. Feche o programa anterior.
+2. Abra a pasta "dist" e execute "Controle de Jornada AGT LOG.exe".
+   (Para recompilar: dê dois cliques em GERAR_EXE.bat.)
+3. Não apague a pasta de dados do servidor nem o banco local.
+
+VERSÃO 0.1.5
+- Dias de espera: o cálculo não usa mais o movimento/parado do PDF, igual à planilha
+  (em agosto, todos os 1034 dias de espera estavam sem movimento/parado).
+  Os tempos do PDF continuam gravados no banco para conferência.
+- Nomes limpos: remove códigos como "- LJ 517562", "- WG 561110", "{WG} 612829",
+  "(MR) (DEDICADOS) 519227", "(L-A) 430305", "(AGT) 551930".
+- Proteção contra perda de dados: se a rede cair na hora de salvar no servidor, o programa
+  avisa "Alterações pendentes de envio" e, na próxima abertura, envia a cópia do computador
+  antes de baixar a do servidor (antes, a alteração era perdida).
+- Pasta do servidor organizada: ficam as 20 versões mais recentes do banco; das mais antigas,
+  a última de cada dia vai para a subpasta "Backups".
+- Correção: no Windows o envio ao servidor podia dar erro de "arquivo em uso" mesmo tendo
+  copiado corretamente.
+- teste_regras.py: autoteste das regras (python teste_regras.py). Não mexe no servidor.
+
+CONFERÊNCIA COM A PLANILHA
+As fórmulas de intervalo, descanso, HE total, HE espera e HE direção foram comparadas com
+a aba RELATÓRIO de "CONTROLE DE JORNADA DE AGOSTO.xlsm": 129 motoristas, 2930 dias,
+nenhuma diferença dia a dia nem nos 8 totais do mês.
+Ainda falta comparar um PDF e a planilha do MESMO mês (o PDF de teste é de outubro).
+Folga (23:59:59 na planilha) ainda não é tratada pelo programa.
+
+HISTÓRICO
+0.1.4: Jornada diária e Resumo do mês em abas separadas. Lista de motoristas ampliada.
+0.1.3: Lista com nome/tipo/placa; resumo mensal com os 8 campos da planilha.
+
+A identificação continua por placa; troca de motorista/veículo requer evolução do cadastro.

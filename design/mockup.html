@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Controle de jornada · AGT LOG (mockup)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wdth,wght@75..100,400..700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Deal: palette white-mint-tiles, type instrument, radius soft (tasteskill start.mjs). Mockup of the Tkinter window, 1500x850. -->
+<style>
+:root{
+  --bg:#ffffff; --surface:#f3f3f3; --ink:#232323; --muted:#686868; --line:rgba(35,35,35,.13);
+  --accent:#a1ffcb; --accent-ink:#232323; --warn:#fff1c2; --warn-ink:#5c4300;
+  --font:"Instrument Sans",system-ui,sans-serif; --mono:"DM Mono",ui-monospace,Consolas,monospace;
+  --r:10px; --r-s:6px;
+}
+*{box-sizing:border-box} html,body{margin:0;height:100%}
+body{font:400 14px/1.5 var(--font);color:var(--ink);background:var(--surface);font-stretch:96%}
+.app{width:1500px;height:850px;margin:0 auto;display:grid;grid-template-rows:64px 1fr 36px;background:var(--surface)}
+/* live buttons: tasteskill motion tokens (140ms in, 200ms out, 90ms press, no overshoot) */
+:root{--m-in:140ms;--m-out:200ms;--m-press:90ms;--m-ease:cubic-bezier(.2,.8,.2,1)}
+button{font:500 14px var(--font);border-radius:var(--r-s);padding:9px 16px;cursor:pointer;border:1px solid var(--line);background:var(--bg);color:var(--ink);display:inline-flex;align-items:center;gap:8px;
+  transition:background-color var(--m-out) var(--m-ease),border-color var(--m-out) var(--m-ease),box-shadow var(--m-out) var(--m-ease),transform var(--m-press) var(--m-ease)}
+button:hover{transition-duration:var(--m-in),var(--m-in),var(--m-in),var(--m-press);background:color-mix(in oklab,var(--bg) 92%,var(--ink));border-color:rgba(35,35,35,.32);box-shadow:0 4px 12px -4px rgba(35,35,35,.18)}
+button.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+button.primary:hover{background:color-mix(in oklab,var(--ink) 84%,var(--bg));box-shadow:0 6px 16px -6px rgba(35,35,35,.45),0 0 0 3px color-mix(in oklab,var(--accent) 70%,transparent)}
+@media (hover:hover) and (pointer:fine){ button:hover{transform:translateY(-2px)} }
+button:active{transform:translateY(1px) scale(.985);box-shadow:none}
+/* each button's glyph answers the pointer with its own meaning */
+.ico{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;overflow:visible}
+.ico *{transition:transform var(--m-out) var(--m-ease),opacity var(--m-out) var(--m-ease);transform-box:fill-box;transform-origin:center}
+button:hover .ico *{transition-duration:var(--m-in)}
+button:hover .up{transform:translateY(-3px)}
+button:hover .down{transform:translateY(3px)}
+button:hover .plus{transform:rotate(90deg)}
+.ico .spin{transition-duration:400ms} button:hover .ico .spin{transform:rotate(180deg);transition-duration:400ms}
+.ico .stem{opacity:0;transform:scaleX(.2);transform-origin:0 50%} button:hover .ico .stem{opacity:1;transform:none} button:hover .ico .head{transform:translateX(3px)}
+@media (prefers-reduced-motion:reduce){ button,button *,.tabs::after{transform:none!important;transition-property:background-color,color,border-color!important} }
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+
+header{display:flex;align-items:center;gap:24px;padding:0 24px;background:var(--bg);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px;font-weight:600;font-size:16px;letter-spacing:-.01em}
+.mark{width:32px;height:32px;border-radius:var(--r-s);background:var(--ink);color:var(--accent);display:grid;place-items:center;font:500 12px var(--mono)}
+.brand span{color:var(--muted);font-weight:400}
+.status{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;padding:6px 12px;border-radius:99px;background:var(--surface)}
+.status i{width:8px;height:8px;border-radius:50%;background:#1fb866}
+.actions{margin-left:auto;display:flex;gap:8px}
+
+main{display:grid;grid-template-columns:380px 1fr;gap:16px;padding:16px 24px;min-height:0}
+.panel{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);min-height:0;display:flex;flex-direction:column}
+
+/* motoristas */
+.side-head{padding:20px 20px 12px}
+h2{font-size:16px;font-weight:600;margin:0}
+.count{color:var(--muted);font-size:13px}
+.search{margin:0 20px 12px;display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--surface)}
+.search input{border:0;background:none;font:400 14px var(--font);flex:1;outline:none;color:var(--ink)}
+.list{overflow:auto;padding:0 8px 8px}
+.driver{display:grid;grid-template-columns:1fr auto;gap:2px 12px;padding:10px 12px;border-radius:var(--r-s);cursor:pointer;transition:background .15s}
+.driver:hover{background:var(--surface)}
+.driver.on{background:var(--ink);color:#fff} .driver.on .meta{color:#c9c9c9} .driver.on .plate{background:var(--accent);color:var(--accent-ink)}
+.driver .name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.driver .meta{color:var(--muted);font-size:13px}
+.plate{font:500 12px var(--mono);padding:2px 8px;border-radius:4px;background:var(--surface);align-self:center;grid-row:span 2}
+
+/* detalhe */
+.detail{display:flex;flex-direction:column;gap:16px;min-height:0}
+.who{display:flex;align-items:flex-end;gap:24px;padding:20px 24px}
+.who h1{font-size:28px;font-weight:500;letter-spacing:-.028em;margin:0;line-height:1.15}
+.who p{margin:4px 0 0;color:var(--muted)}
+.who .plate{grid-row:auto;font-size:13px;margin-left:8px;vertical-align:middle}
+.month{margin-left:auto;display:flex;align-items:center;gap:8px}
+.month label{font-size:13px;color:var(--muted);font-weight:500}
+.month input{font:500 14px var(--mono);padding:8px 12px;border:1px solid var(--line);border-radius:var(--r-s);width:110px}
+
+.stats{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line)}
+.stat{padding:16px 24px;border-left:1px solid var(--line)} .stat:first-child{border-left:0}
+.stat b{display:block;font:500 22px var(--mono);letter-spacing:-.02em}
+.stat span{font-size:13px;color:var(--muted)}
+.stat.hl b::after{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-left:8px;vertical-align:middle;box-shadow:0 0 0 1px rgba(35,35,35,.25)}
+
+.tabs{position:relative;display:flex;gap:4px;padding:12px 16px 0;border-bottom:1px solid var(--line)}
+.tabs::after{content:"";position:absolute;bottom:-1px;left:var(--x,16px);width:var(--w,0);height:2px;background:var(--ink);transition:left 240ms cubic-bezier(.65,0,.35,1),width 240ms cubic-bezier(.65,0,.35,1)}
+.tab{border:0;border-radius:var(--r-s) var(--r-s) 0 0;background:none;padding:8px 12px 12px;color:var(--muted)}
+.tab:hover{transform:none!important;box-shadow:none;background:var(--surface);color:var(--ink)}
+.tab[aria-selected=true]{color:var(--ink)}
+.view{flex:1;overflow:auto;min-height:0} .view[hidden]{display:none}
+
+table{width:100%;border-collapse:collapse}
+th{position:sticky;top:0;background:var(--bg);text-align:left;font-size:13px;font-weight:500;color:var(--muted);padding:10px 16px;border-bottom:1px solid var(--line)}
+td{padding:9px 16px;border-bottom:1px solid var(--line);font:400 14px var(--mono)}
+td:first-child{font-family:var(--font);font-weight:500}
+tbody tr{cursor:pointer;transition:background .12s} tbody tr:hover{background:var(--surface)}
+.chip{font:500 12px var(--font);padding:3px 10px;border-radius:99px;background:var(--surface)}
+.chip.ok{background:var(--accent);color:var(--accent-ink)} .chip.rev{background:var(--warn);color:var(--warn-ink)}
+
+.grid8{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:20px}
+.cell{background:var(--surface);border-radius:var(--r);padding:20px}
+.cell span{font-size:13px;color:var(--muted)} .cell b{display:block;font:500 24px var(--mono);margin-top:8px}
+.cell.total{background:var(--ink);color:#fff} .cell.total span{color:#c9c9c9} .cell.total b{color:var(--accent)}
+.note{padding:0 20px 20px;color:var(--muted);font-size:13px}
+
+footer{display:flex;justify-content:space-between;align-items:center;padding:0 24px;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><div class="mark">AGT</div>AGT LOG <span>/ Controle de jornada</span></div>
+    <div class="status"><i></i>Conectado ao servidor</div>
+    <div class="actions">
+      <button class="primary"><svg class="ico" viewBox="0 0 16 16"><g class="up"><path d="M8 10V2M4.5 5.5 8 2l3.5 3.5"/></g><path d="M2.5 11v2.5h11V11"/></svg>Importar PDF</button>
+      <button><svg class="ico" viewBox="0 0 16 16"><g class="plus"><path d="M8 3v10M3 8h10"/></g></svg>Cadastrar motorista</button>
+      <button><svg class="ico" viewBox="0 0 16 16"><g class="down"><path d="M8 2v8M4.5 6.5 8 10l3.5-3.5"/></g><path d="M2.5 11v2.5h11V11"/></svg>Exportar CSV</button>
+      <button>Servidor<svg class="ico" viewBox="0 0 16 16" style="width:12px"><path class="stem" d="M1 8h11"/><path class="head" d="M8 4l4 4-4 4"/></svg></button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="side-head"><h2>Motoristas</h2><div class="count">129 cadastrados</div></div>
+      <label class="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#686868" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input placeholder="Buscar por nome ou placa"></label>
+      <div class="list" id="list"></div>
+    </section>
+
+    <section class="detail">
+      <div class="panel">
+        <div class="who">
+          <div><h1>José Carlos Ferreira <span class="plate">RTA4E21</span></h1><p>Truck · 31 dias importados de outubro</p></div>
+          <div class="month"><label for="m">Competência</label><input id="m" value="2026-10"><button><svg class="ico" viewBox="0 0 16 16"><g class="spin"><path d="M13 8a5 5 0 1 1-1.5-3.5"/><path d="M13 2.5V5h-2.5"/></g></svg>Atualizar</button></div>
+        </div>
+        <div class="stats">
+          <div class="stat"><b>186:42:10</b><span>Tempo de direção</span></div>
+          <div class="stat"><b>41:05:33</b><span>Tempo de espera</span></div>
+          <div class="stat"><b>12:18:47</b><span>HE em direção</span></div>
+          <div class="stat hl"><b>19:02:15</b><span>Total de hora extra</span></div>
+        </div>
+      </div>
+
+      <div class="panel" style="flex:1">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" aria-selected="true" data-v="daily">Jornada diária</button>
+          <button class="tab" role="tab" aria-selected="false" data-v="month">Resumo do mês</button>
+        </div>
+        <div class="view" id="daily">
+          <table><thead><tr><th>Data</th><th>Início</th><th>Fim</th><th>Em movimento</th><th>Parado ligado</th><th>T. espera</th><th>Situação</th></tr></thead><tbody id="rows"></tbody></table>
+        </div>
+        <div class="view" id="month" hidden>
+          <div class="grid8">
+            <div class="cell"><span>Tempo direção</span><b>186:42:10</b></div>
+            <div class="cell"><span>Tempo intervalo</span><b>28:10:00</b></div>
+            <div class="cell"><span>Tempo espera</span><b>41:05:33</b></div>
+            <div class="cell"><span>TD + TE</span><b>227:47:43</b></div>
+            <div class="cell"><span>T descanso</span><b>312:30:12</b></div>
+            <div class="cell"><span>HE em direção</span><b>12:18:47</b></div>
+            <div class="cell"><span>HE em T espera</span><b>06:43:28</b></div>
+            <div class="cell total"><span>Total hora extra</span><b>19:02:15</b></div>
+          </div>
+          <p class="note">Cálculos baseados nas fórmulas do Excel; validar antes da folha.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer><span>Duplo clique em um dia para conferir ou editar.</span><span>Desenvolvido por Luiz Tyrone · v0.1.5</span></footer>
+</div>
+<script>
+// sample data for the mockup only
+const drivers=[['José Carlos Ferreira','Truck','RTA4E21'],['Antônio Marcos Silva','Carreta','QWE1B34'],['Paulo Henrique Souza','Bitrem','PLK7C90'],['Marcelo Augusto Lima','Truck','RHT2D11'],['Edson Ribeiro Costa','Toco','QAZ5F66'],['Rogério Alves Pinto','Carreta','RBC8A02'],['Luciano Gomes Rocha','Rodotrem','PTR3G45'],['Valdir Santos Melo','Truck','QDF9H70'],['Cláudio Rezende Dias','Bitrem','RKL4J83'],['Francisco Nunes Prado','Carreta','QMN6K12'],['Sebastião Moura Reis','Toco','PZX1L58'],['Adriano Teixeira Cruz','Truck','RUV7M29']];
+document.getElementById('list').innerHTML=drivers.map((d,i)=>`<div class="driver${i?'':' on'}"><span class="name">${d[0]}</span><span class="plate">${d[2]}</span><span class="meta">${d[1]}</span></div>`).join('');
+const st=['ok','ok','ok','rev','ok','ed','ok','ok','ok','ok','rev','ok','ok','ok'],lab={ok:'Conferido',rev:'Revisar',ed:'Editado'};
+document.getElementById('rows').innerHTML=st.map((s,i)=>`<tr><td>${String(i+1).padStart(2,'0')}/10 · ${['qua','qui','sex','sáb','dom','seg','ter'][i%7]}</td><td>05:${10+i*3}:00</td><td>17:${20+i*2}:00</td><td>0${6+i%3}:4${i%10}:12</td><td>00:${30+i}:05</td><td>01:1${i%10}:40</td><td><span class="chip ${s==='ed'?'':s}">${lab[s]}</span></td></tr>`).join('');
+const bar=document.querySelector('.tabs'),mark=t=>{bar.style.setProperty('--x',t.offsetLeft+'px');bar.style.setProperty('--w',t.offsetWidth+'px')};
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.setAttribute('aria-selected',x===t));document.querySelectorAll('.view').forEach(v=>v.hidden=v.id!==t.dataset.v);mark(t)});
+document.fonts.ready.then(()=>mark(document.querySelector('.tab[aria-selected=true]')));
+</script>
+</body>
+</html>
