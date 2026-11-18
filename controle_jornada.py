@@ -12,7 +12,7 @@ except ImportError:
     fitz = None
 
 APP = 'Controle de Jornada AGT LOG'
-VERSION = '0.1.9'  # a tag do release no GitHub deve ser v + esta versão (ex.: v0.1.8)
+VERSION = '0.1.10'  # a tag do release no GitHub deve ser v + esta versão (ex.: v0.1.8)
 GITHUB_REPO = 'Luiz-tyrone/controle-jornada'  # repositório público: as atualizações saem dos releases
 SERVER = r'\\Servidor-agtlog\doc frota\CONTROLE DE JORNADA\DADOS DO NOVO SISTEMA QUE SUB PLANILHA'
 LOCAL = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AGTLOG' / 'ControleJornada'
@@ -309,6 +309,8 @@ def link_drivers(con):
 
 
 # Colunas da lista de motoristas (filtros estilo Excel no título de cada coluna).
+CALC='#FFFBEA'  # amarelo bem clarinho: linhas calculadas na Planilha do mês
+CALC_ROWS={'TE + TD','Intervalo','Descanso','Hora extra total'}  # mesmas linhas azuis da planilha (Excesso Jornada = Hora extra total)
 DRIVER_COLS={'nome':'Motorista','tipo':'Tipo','placa':'Placa'}  # placa = placa(s) usada(s) no mês escolhido
 NO_PLATE='(sem jornada no mês)'
 
@@ -407,7 +409,7 @@ class SheetGrid(tk.Frame):
             c.bind('<Shift-MouseWheel>',lambda e:self.xscroll('scroll',-e.delta//120,'units'))
 
     def set(self,cols,rows):
-        """cols: [(nome, placas)]; rows: [(dia, item, [valor por coluna], fundo, fim_do_bloco)]."""
+        """cols: [(nome, placas)]; rows: [(dia, item, [valor por coluna], fundo, fim_do_bloco, fundo_da_coluna_dia)]."""
         self.cols=cols;self.rows=rows;self.x=self.y=0;self.draw()
 
     def fit(self,text,font,width):
@@ -447,9 +449,10 @@ class SheetGrid(tk.Frame):
             self.head.create_line(x0+cw,0,x0+cw,hh,fill=LINE)
         self.head.create_line(0,hh-1,max(W,self.head.winfo_width()),hh-1,fill=edge)
         # corpo
-        for i,(day,item,vals,fill,end) in enumerate(rows):
+        for i,(day,item,vals,fill,end,band) in enumerate(rows):
             y0=i*rh;y1=y0+rh
-            if fill!=CARD:self.left.create_rectangle(0,y0,L,y1,fill=fill,outline='');self.body.create_rectangle(0,y0,W,y1,fill=fill,outline='')
+            if band!=CARD:self.left.create_rectangle(0,y0,l0,y1,fill=band,outline='')
+            if fill!=CARD:self.left.create_rectangle(l0,y0,L,y1,fill=fill,outline='');self.body.create_rectangle(0,y0,W,y1,fill=fill,outline='')
             show_day=day if (i==0 or self.rows[self.y+i-1][4]) else ''
             if show_day:self.left.create_text(l0/2,y0+rh/2,text=show_day,font=self.hfont,fill=INK)
             self.left.create_text(l0+10,y0+rh/2,text=item,font=self.lfont,fill=INK,anchor='w')
@@ -813,10 +816,11 @@ class App:
             day=lambda L:L[0] if len(L)==1 else (date,'','',hhmmss(sum(seconds(x[3]) for x in L)),hhmmss(sum(seconds(x[4]) for x in L)),'','DUAS')
             cells={c:(day(by[c][date]),month_metrics(by[c][date])[0]) for c in ids if date in by[c]}
             for i,(label,get) in enumerate(items):
-                grid.append((f'{d:02d}',label,[get(*cells[c]) if c in cells else '' for c in ids],fill,i==len(items)-1))
+                # Linhas calculadas em amarelo clarinho, como as linhas azuis da planilha original.
+                grid.append((f'{d:02d}',label,[get(*cells[c]) if c in cells else '' for c in ids],CALC if label in CALC_ROWS else fill,i==len(items)-1,fill))
         totals={c:month_metrics([r for L in by[c].values() for r in L])[0] for c in ids}
         for i,(key,label) in enumerate(RESUMO):
-            grid.append(('Mês',label,[fmt(totals[c][key]) for c in ids],'#FFF4D1',i==len(RESUMO)-1))
+            grid.append(('Mês',label,[fmt(totals[c][key]) for c in ids],'#FFF4D1',i==len(RESUMO)-1,'#FFF4D1'))
         self.grid_sheet.set([(names[c],plates_text(used.get(c))) for c in ids],grid)
         self.sheet_sub.config(text=f'{MESES[m-1]} de {y}  ·  {len(ids)} motoristas  ·  {len(rows)} dias lançados')
 
