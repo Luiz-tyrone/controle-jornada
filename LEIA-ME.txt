@@ -1,10 +1,17 @@
-CONTROLE DE JORNADA AGT LOG — v0.1.10
+CONTROLE DE JORNADA AGT LOG — v0.1.11
 
 COMO USAR
 1. Feche o programa anterior.
 2. Abra a pasta "dist" e execute "Controle de Jornada AGT LOG.exe".
    (Para recompilar: dê dois cliques em GERAR_EXE.bat.)
 3. Não apague a pasta de dados do servidor nem o banco local.
+
+VERSÃO 0.1.11
+- Botão "Exportar Excel" na Planilha do mês: gera o .xlsx da aba RELATÓRIO igual à planilha
+  original (mesmas linhas, cores e fórmulas; Resumo do Mês nas linhas 409 a 416).
+- Nova página "Códigos Domínio": código de funcionário de cada motorista, com busca; em amarelo
+  quem está sem código. Duplo clique para informar ou corrigir (vai para o servidor e a auditoria).
+- Dependências novas: openpyxl e Pillow (requirements.txt).
 
 VERSÃO 0.1.10
 - Planilha do mês: linhas calculadas (TE + TD, Intervalo, Descanso e Hora extra total) em

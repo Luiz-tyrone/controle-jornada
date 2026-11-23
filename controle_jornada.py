@@ -12,7 +12,7 @@ except ImportError:
     fitz = None
 
 APP = 'Controle de Jornada AGT LOG'
-VERSION = '0.1.10'  # a tag do release no GitHub deve ser v + esta versão (ex.: v0.1.8)
+VERSION = '0.1.11'  # a tag do release no GitHub deve ser v + esta versão (ex.: v0.1.8)
 GITHUB_REPO = 'Luiz-tyrone/controle-jornada'  # repositório público: as atualizações saem dos releases
 SERVER = r'\\Servidor-agtlog\doc frota\CONTROLE DE JORNADA\DADOS DO NOVO SISTEMA QUE SUB PLANILHA'
 LOCAL = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AGTLOG' / 'ControleJornada'
@@ -274,6 +274,89 @@ def payroll(drivers,employees,comp):
     ok=sorted(by_code.values(),key=lambda r:plain(r['nome']))
     lines=[txt_line(r['codigo'],comp,rub,secs) for r in ok for rub,secs in ((RUBRICA_DIRECAO,r['direcao']),(RUBRICA_ESPERA,r['espera'])) if secs>0]
     return lines,ok,pend
+
+
+def export_relatorio(path,month,drivers):
+    """Aba RELATÓRIO igual à planilha original (CONTROLE DE JORNADA DE OUTUBRO.xlsm): mesmas linhas, cores e fórmulas.
+    drivers: [(nome, {data: (inicio,fim,movimento,parado,espera,status)})]. O Excel recalcula ao abrir."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment,Border,Font,PatternFill,Side
+    from openpyxl.utils import get_column_letter as L
+    from openpyxl.worksheet.merge import MergedCellRange
+    y,m=map(int,month.split('-'));days=calendar.monthrange(y,m)[1]
+    merges=[];mg=lambda r0,c0,r1,c1:merges.append(f'{L(c0)}{r0}:{L(c1)}{r1}')  # gravadas de uma vez no fim (ver abaixo)
+    # Tema da planilha: accent5 4472C4 (-50% 223962, -25% 2F5597, +60% B4C7E7) e azul-marinho 002060.
+    navy,head,calc=(PatternFill('solid',fgColor=c) for c in ('002060','2F5597','B4C7E7'))
+    white=Font(name='Calibri',size=11,bold=True,color='FFFFFF');blue=Font(name='Calibri',size=11,color='223962')
+    s={k:Side(style=k,color='223962') for k in ('thin','dotted','medium')};s[None]=Side()
+    bd=lambda l,r,t,b:Border(left=s[l],right=s[r],top=s[t],bottom=s[b])
+    mid=Alignment(horizontal='center',vertical='center',wrap_text=True);right=Alignment(horizontal='right',vertical='center');center=Alignment(horizontal='center')
+    TF='[h]:mm:ss;@';t=lambda sec:sec/86400
+    wb=Workbook();ws=wb.active;ws.title='RELATÓRIO';ws.sheet_view.showGridLines=False;ws.sheet_view.zoomScale=70;ws.freeze_panes='C5'
+    wb.calculation.fullCalcOnLoad=True
+    ws['A1'],ws['A2']=t(86399),t(28800)
+    for a in ('A1','A2'):ws[a].number_format=TF;ws[a].font=Font(name='Calibri',size=11,bold=True,color='FFFFFF');ws[a].alignment=center
+    ws['C1']='FOLHA DE PONTOS';ws['C1'].font=Font(name='Calibri',size=11,bold=True,color='223962');ws['C1'].alignment=mid;mg(1,3,2,4)
+    ws.column_dimensions['A'].width=8.14;ws.column_dimensions['B'].width=16.86;ws.row_dimensions[3].height=32.1
+    try:  # logo no canto, como na original (precisa do Pillow; sem ele a planilha sai só sem o logo)
+        from openpyxl.drawing.image import Image
+        logo=Image(str(Path(getattr(sys,'_MEIPASS',Path(__file__).parent))/'logo_agtlog.png'));logo.width,logo.height=190,61;ws.add_image(logo,'A1')
+    except Exception:pass
+    labels=['Período Jornada','Em Movimento','Parado Ligado','Veículo Desligado','T. Espera','','','TE+TD','Intervalo','Descanso','Folga','Excesso Jornada']
+    hidden=['','T direção','','','T. Espera','H. Ex. T. Espera','','TE+TD','T.intervalo','T descanso','','hora extra Total']
+    calc_rows={3,7,8,9,11};pairs={0,4,5,6,10}  # linhas calculadas (fundo azul) e linhas com Hr. Ini./Hr. Fim
+    def label_col(r0):  # colunas A e B de um dia
+        for i,lab in enumerate(labels):
+            r=r0+i;top='medium' if i==0 else 'thin';bot='medium' if i==11 else 'thin'
+            ws.cell(r,1).border=bd('medium','thin',top if i==0 else None,bot if i==11 else None)
+            c=ws.cell(r,2,lab or None);c.font=blue;c.alignment=right;c.border=bd('thin',None,top,bot)
+        mg(r0+4,2,r0+6,2)
+    summary=[('Tempo Direção',1),('Tempo Intervalo',8),('Tempo Espera',4),('TD + TE',None),('T Descanso',9),('HE em Direção',None),('HE em T Espera',5),('Total Hora Extra',11)]
+    starts=[5+13*(d-1) for d in range(1,days+1)]
+    for d,r0 in enumerate(starts,1):
+        a=ws.cell(r0,1,d);a.fill=navy;a.font=white;a.alignment=mid;mg(r0,1,r0+11,1);label_col(r0)
+    a=ws.cell(409,1,'Resumo do Mês');a.fill=navy;a.font=white;a.alignment=mid;mg(409,1,416,1)
+    for i,(lab,_) in enumerate(summary):
+        r=409+i;ws.cell(r,1).border=bd('medium','thin','medium' if i==0 else None,'medium' if i==7 else None)
+        c=ws.cell(r,2,lab);c.font=blue;c.alignment=right;c.border=bd('thin',None,'medium' if i==0 else 'thin','medium' if i==7 else 'thin')
+    for n,(name,rows) in enumerate(drivers):
+        C,D,E,F=(L(3+4*n+k) for k in range(4))
+        for k,w in zip((C,D),(9.86,9.86)):ws.column_dimensions[k].width=w
+        for k in (E,F):ws.column_dimensions[k].hidden=True
+        c=ws[f'{C}3'];c.value=name;c.fill=navy;c.font=white;c.alignment=mid;c.border=bd('thin','dotted','thin','thin');ws[f'{D}3'].border=bd(None,'thin','thin','thin');mg(3,3+4*n,3,4+4*n)
+        for k,txt in ((C,'Hr. Ini.'),(D,'Hr. Fim')):c=ws[f'{k}4'];c.value=txt;c.fill=head;c.font=white;c.alignment=center;c.border=bd('thin','thin','thin',None)
+        for d,r0 in enumerate(starts,1):
+            R=lambda i:r0+i;e=lambda i:f'{E}{R(i)}'
+            rec=rows.get(f'{month}-{d:02d}');vals={}
+            if rec:
+                start,end,mov,stop,wait,status=rec;wait=seconds(wait)
+                if status!='ESPERA FIXA':  # dia de espera não leva jornada/movimento/parado (regra de month_metrics)
+                    if start and end:vals[(0,C)]=t(seconds(start));vals[(0,D)]=t(seconds(end)+(86400 if end<start else 0))
+                    vals[(1,C)]=t(seconds(mov));vals[(2,C)]=t(seconds(stop))
+                if wait==36000:vals.update({(4,C):t(21600),(4,D):t(39600),(5,C):t(46800),(5,D):t(64800)})  # 06-11 e 13-18, como na planilha
+                elif wait:vals.update({(4,C):0,(4,D):t(wait)})
+            f={3:f'=IF(SUM({E}{R(0)}:{E}{R(2)},{E}{R(4)}:{E}{R(11)})=TIME(0,0,0),TIME(0,0,0),$A$1-{e(1)}-{e(2)})',7:f'={e(4)}+{e(1)}',
+               8:f'=IF($A$1-{e(1)}-{e(2)}=TIME(23,59,59),TIME(0,0,0),IF(AND({e(0)}=TIME(0,0,0),{e(10)}=TIME(0,0,0)),TIME(2,0,0),{e(0)}-{e(1)}-{e(4)}))',
+               9:f'=IF($A$1-{e(1)}-{e(2)}=TIME(23,59,59),TIME(0,0,0),IF({e(10)}=TIME(23,59,59),TIME(23,59,59),IF(AND({e(0)}=TIME(0,0,0),{e(10)}=TIME(0,0,0)),TIME(11,59,59)+{e(8)},IF({e(0)}=TIME(0,0,0),TIME(0,0,0),$A$1-{e(0)}+{e(8)}))))',
+               11:f'=IF(AND({e(1)}-$A$2<0,{e(7)}<TIME(8,0,0)),0,IF(AND({e(0)}=TIME(0,0,0),{e(10)}=TIME(0,0,0)),TIME(2,0,0),{e(0)}-{e(8)}-TIME(8,0,0)))'}
+            for i in range(12):
+                r=R(i);top='medium' if i==0 else 'thin';bot='medium' if i==11 else 'thin'
+                c=ws.cell(r,3+4*n,f.get(i,vals.get((i,C))));c.number_format=TF;c.font=blue;c.alignment=center;c.border=bd('thin','dotted',top,bot)
+                if i in calc_rows:c.fill=calc
+                dc=ws.cell(r,4+4*n,vals.get((i,D)));dc.border=bd('dotted' if i in pairs else None,'thin',top,bot)
+                if i in pairs:dc.number_format=TF;dc.font=blue;dc.alignment=center
+                else:mg(r,3+4*n,r,4+4*n)
+                ex={0:f'={D}{r}-{C}{r}',4:f'=({D}{r}-{C}{r})+({D}{r+1}-{C}{r+1})+({D}{r+2}-{C}{r+2})',5:f'=IF({e(4)}>TIME(8,0,0),{e(4)}-TIME(8,0,0),TIME(0,0,0))',
+                    6:None,10:f'={D}{r}-{C}{r}'}.get(i,f'={C}{r}')
+                ws[f'{E}{r}']=ex;ws[f'{E}{r}'].number_format=TF;ws[f'{F}{r}']=hidden[i] or None
+        for i,(lab,off) in enumerate(summary):
+            r=409+i;total={3:f'={C}411+{C}409',5:f'={C}416-{C}415'}.get(i) or '='+'+'.join(f'{E}{r0+off}' for r0 in starts)
+            c=ws[f'{C}{r}'];c.value=total;c.number_format=TF;c.font=blue;c.alignment=center;c.fill=calc
+            c.border=bd('thin','dotted','medium' if i==0 else 'thin','medium' if i==7 else 'thin');ws[f'{D}{r}'].border=bd(None,'thin','medium' if i==0 else 'thin','medium' if i==7 else 'thin')
+            mg(r,3+4*n,r,4+4*n)
+    # ws.merge_cells() compara cada mescla com todas as anteriores: com ~25 mil levava minutos.
+    ws.merged_cells.ranges={MergedCellRange(ws,r) for r in merges}
+    wb.save(path)
 
 
 def driver_key(raw):
@@ -654,7 +737,7 @@ class App:
         except tk.TclError:lbl(head,'AGT LOG',font=(FONT,12,'bold')).pack(side='left',padx=(24,0))
         lbl(head,'Controle de jornada',MUTED,11).pack(side='left',padx=(8,12))
         nav=tk.Frame(head,bg=CARD);nav.pack(side='left',padx=(8,0));self.page_tabs={}
-        for key,text in (('motoristas','Motoristas'),('planilha','Planilha do mês')):
+        for key,text in (('motoristas','Motoristas'),('planilha','Planilha do mês'),('codigos','Códigos Domínio')):
             t=lbl(nav,text,MUTED,font=(FONT+' Semibold',10),padx=14,pady=6,cursor='hand2');t.pack(side='left',padx=(0,4));self.page_tabs[key]=t
             t.bind('<Button-1>',lambda e,k=key:self.show_page(k))
             t.bind('<Enter>',lambda e,t=t:(fade(t,dict(bg=BG),140),t.config(fg=INK)))
@@ -747,7 +830,7 @@ class App:
         for col in range(4):metrics.grid_columnconfigure(col,weight=1,uniform='m')
         self.metric_warning=lbl(bottom,'Cálculos baseados nas fórmulas do Excel; validar antes da folha.',MUTED,9)
         self.metric_warning.pack(anchor='w',padx=6,pady=(8,0))
-        self.build_sheet(lbl,content);self.show_page('motoristas')
+        self.build_sheet(lbl,content);self.build_codes(lbl);self.show_page('motoristas')
 
     def build_sheet(self,lbl,content):
         """Segunda página: todos os motoristas lado a lado, como a aba RELATÓRIO da planilha."""
@@ -759,6 +842,7 @@ class App:
         self.sheet_sub=lbl(who,'Todos os motoristas do mês lado a lado.',MUTED);self.sheet_sub.pack(anchor='w')
         filt=tk.Frame(row,bg=CARD);filt.pack(side='right')
         self.month_button(filt).pack(side='left',padx=(0,8));live_button(filt,'↻  Atualizar',self.refresh).pack(side='left')
+        live_button(filt,'↓  Exportar Excel',self.export_excel).pack(side='left',padx=(8,0))
         live_button(filt,'↓  Gerar TXT contábil',self.export_txt,True).pack(side='left',padx=(8,0))
         self.grid_sheet=SheetGrid(sheet);self.grid_sheet.configure(highlightthickness=1,highlightbackground=LINE);self.grid_sheet.pack(fill='both',expand=True)
 
@@ -775,6 +859,7 @@ class App:
         self.page=key
         for k,t in self.page_tabs.items():t.config(bg=BG if k==key else CARD,fg=INK if k==key else MUTED)
         if key=='planilha' and self.sheet_dirty:self.refresh_sheet()  # só remonta se os dados mudaram
+        if key=='codigos':self.refresh_codes()
         new=self.pages[key]
         if old is None:  # abertura do programa: sem animação
             self.place_page(new)
@@ -1184,6 +1269,103 @@ class App:
             w=csv.writer(f,delimiter=';');w.writerow(['Data','Motorista','Placa','Início','Fim','Em movimento','Parado ligado','T. espera','Regra']);w.writerows(rows)
         messagebox.showinfo('Exportação',f'Arquivo exportado:\n{dest}')
 
+    def export_excel(self):
+        """Planilha do mês no formato da aba RELATÓRIO original, em .xlsx."""
+        if not self.connected:return messagebox.showwarning('Servidor','Conecte ao servidor primeiro.')
+        month=self.month.get();y,m=month.split('-')
+        dest=filedialog.asksaveasfilename(title='Salvar planilha do mês',defaultextension='.xlsx',filetypes=[('Planilha do Excel','*.xlsx')],
+                                          initialdir=str(Path(self.server)/'Relatorios'),initialfile=f'CONTROLE DE JORNADA DE {MESES[int(m)-1].upper()} {y}.xlsx')
+        if not dest:return
+        with db() as con:
+            rows=con.execute(f'SELECT a.condutor,j.data,j.inicio,j.fim,j.movimento,j.parado,j.espera,j.status {JORNADAS} WHERE j.data LIKE ? ORDER BY j.data,j.placa',(month+'%',)).fetchall()
+            names=dict(con.execute('SELECT id,nome FROM condutores'))
+        by={};twice=0
+        for cid,date,*rec in rows:
+            # shortcut: duas placas no mesmo dia -> vai só a primeira jornada (hoje não há nenhum caso); somar se começar a acontecer.
+            twice+=date in by.setdefault(cid,{});by[cid].setdefault(date,rec)
+        # Leva ~10 s com 100+ motoristas: gera em segundo plano para a janela não ficar "Não respondendo".
+        self.root.config(cursor='watch');res={}
+        def work():
+            try:export_relatorio(dest,month,[(names[c],by[c]) for c in sorted(by,key=lambda c:plain(names[c]))])
+            except Exception as e:res['erro']=e
+            res['fim']=True
+        threading.Thread(target=work,daemon=True).start()
+        def wait():
+            if 'fim' not in res:return self.root.after(200,wait)
+            self.root.config(cursor='')
+            if 'erro' in res:return messagebox.showerror('Exportar Excel',f'Não foi possível gerar a planilha:\n{res["erro"]}')
+            aviso=f'\n\nAtenção: {twice} dia(s) com duas placas; só a primeira jornada do dia foi para a planilha.' if twice else ''
+            if messagebox.askyesno('Exportar Excel',f'Planilha criada com {len(by)} motoristas.\n\n{dest}{aviso}\n\nAbrir agora?'):os.startfile(dest)
+        wait()
+
+    def code_dialog(self,parent,cid,name,suggest,employees,done,info=''):
+        """O código fica salvo no cadastro do motorista (servidor): nos próximos meses ele entra sozinho no TXT."""
+        dlg=tk.Toplevel(parent);dlg.title('Código no Domínio');dlg.configure(bg=CARD);dlg.transient(parent);dlg.grab_set()
+        box=tk.Frame(dlg,bg=CARD,padx=22,pady=18);box.pack(fill='both',expand=True)
+        tk.Label(box,text=f'{name}  ·  {info}' if info else name,bg=CARD,fg=INK,font=(FONT,12)).pack(anchor='w')
+        tk.Label(box,text='Código do funcionário no Domínio (deixe vazio para voltar à busca pelo nome):',bg=CARD,fg=MUTED,font=(FONT,9)).pack(anchor='w',pady=(8,4))
+        var=tk.StringVar(value=suggest);ent=ttk.Entry(box,textvariable=var,font=(MONO,11));ent.pack(fill='x');ent.focus_set()
+        hint=tk.Label(box,text='',bg=CARD,fg=MUTED,font=(FONT,9));hint.pack(anchor='w',pady=(4,0))
+        show=lambda *a:hint.config(text=next((e['nome'] for e in employees if e['codigo']==var.get().strip()),'Código não está no PDF de cadastro' if var.get().strip() and employees else ''))
+        var.trace_add('write',show);show()
+        def ok():
+            c=var.get().strip()
+            if c and (not c.isdigit() or len(c)>10):return messagebox.showerror('Código','Use só números, até 10 dígitos.',parent=dlg)
+            try:
+                with sqlite3.connect(DB) as con:
+                    con.execute('UPDATE condutores SET codigo=? WHERE id=?',(c or None,cid))
+                    con.execute('INSERT INTO auditoria(instante,placa,data,operacao,detalhe) VALUES(?,?,?,?,?)',(dt.datetime.now().isoformat(),'','','CODIGO DOMINIO',f'{name}: {c or "removido"}'))
+                self.publish()
+            except Exception as e:return messagebox.showerror('Código',str(e),parent=dlg)
+            dlg.destroy();done()
+        live_button(box,'Salvar código',ok,True).pack(fill='x',pady=(12,0));ent.bind('<Return>',lambda e:ok())
+        self.center(dlg)
+
+    def build_codes(self,lbl):
+        """Terceira página: código de cada motorista no Domínio, usado pelo TXT contábil."""
+        page=tk.Frame(self.stage,bg=BG);self.pages['codigos']=page
+        top=tk.Frame(page,bg=CARD,highlightthickness=1,highlightbackground=LINE);top.pack(fill='x',pady=(0,16))
+        row=tk.Frame(top,bg=CARD);row.pack(fill='x',padx=24,pady=18)
+        who=tk.Frame(row,bg=CARD);who.pack(side='left')
+        lbl(who,'Códigos no Domínio',font=(FONT,18)).pack(anchor='w')
+        self.codes_sub=lbl(who,'Código de funcionário de cada motorista, usado no TXT contábil.',MUTED);self.codes_sub.pack(anchor='w')
+        live_button(row,'↻  Atualizar',self.refresh_codes).pack(side='right')
+        card=tk.Frame(page,bg=CARD,highlightthickness=1,highlightbackground=LINE);card.pack(fill='both',expand=True)
+        lbl(card,'Duplo clique em um motorista para informar ou corrigir o código. Em amarelo: sem código (no TXT, busca pelo nome no PDF de cadastro).',MUTED,9).pack(side='bottom',anchor='w',padx=20,pady=(0,12))
+        box=tk.Frame(card,bg=BG,highlightthickness=1,highlightbackground=LINE);box.pack(fill='x',padx=20,pady=(16,12))
+        lbl(box,'⌕',MUTED,13,bg=BG).pack(side='left',padx=(10,0))
+        self.codes_search=tk.StringVar();entry=tk.Entry(box,textvariable=self.codes_search,font=(FONT,10),relief='flat',bg=BG,fg=INK,insertbackground=INK)
+        entry.pack(side='left',fill='x',expand=True,ipady=8,padx=8);entry.bind('<KeyRelease>',lambda e:self.refresh_codes())
+        entry.bind('<FocusIn>',lambda e:box.config(highlightbackground=INK));entry.bind('<FocusOut>',lambda e:box.config(highlightbackground=LINE))
+        lst=tk.Frame(card,bg=CARD);lst.pack(fill='both',expand=True,padx=(12,8),pady=(0,8))
+        t=self.codes_tree=ttk.Treeview(lst,columns=('nome','tipo','codigo'),show='headings',selectmode='browse');self.code_rows=[]
+        for c,h,w,a in (('nome','Motorista',380,'w'),('tipo','Tipo',200,'w'),('codigo','Código no Domínio',160,'center')):t.heading(c,text=h,anchor=a);t.column(c,width=w,minwidth=80,anchor=a)
+        sc=ttk.Scrollbar(lst,orient='vertical',command=t.yview);t.configure(yscrollcommand=sc.set)
+        t.pack(side='left',fill='both',expand=True);sc.pack(side='right',fill='y')
+        t.tag_configure('sem',background='#FFF4D1');hover_rows(t);t.bind('<Double-1>',self.edit_code)
+
+    def refresh_codes(self):
+        if not self.connected:return
+        with db() as con:self.code_rows=con.execute('SELECT id,nome,tipo,codigo FROM condutores').fetchall()
+        t=self.codes_tree;keep=t.focus();t.delete(*t.get_children());term=plain(self.codes_search.get())
+        for cid,n,k,c in sorted(self.code_rows,key=lambda r:plain(r[1])):
+            if term and term not in plain(n)+' '+(c or ''):continue
+            t.insert('','end',iid=str(cid),values=(n,k or '',c or '—'),tags=() if c else ('sem',))
+        if keep and t.exists(keep):t.selection_set(keep);t.focus(keep);t.see(keep)
+        missing=sum(not r[3] for r in self.code_rows)
+        self.codes_sub.config(text=f'{len(self.code_rows)-missing} com código  ·  {missing} sem código  ·  {len(self.code_rows)} motoristas')
+
+    def edit_code(self,event=None):
+        i=self.codes_tree.focus()
+        if not i:return
+        cid,n,k,c=next(r for r in self.code_rows if str(r[0])==i)
+        cad=self.load_config().get('cadastro_pdf','')
+        try:emps=parse_employees(cad) if cad and Path(cad).is_file() else []
+        except Exception:emps=[]  # sem PDF de cadastro: só não mostra o nome do funcionário
+        if not c and emps:
+            kind,e,_=match_employee(n,emps);c=e['codigo'] if kind in ('EXATO','PROVAVEL') else ''
+        self.code_dialog(self.root,cid,n,c or '',emps,self.refresh_codes,k or '')
+
     def export_txt(self,pick=False):
         """Gera o TXT de horas extras para o Domínio, como o módulo Planilha de Horas do HUB RH."""
         if not self.connected:return messagebox.showwarning('Servidor','Conecte ao servidor primeiro.')
@@ -1213,27 +1395,7 @@ class App:
         bar=tk.Frame(frm,bg=CARD);bar.pack(side='bottom',fill='x',pady=(12,0))  # rodapé primeiro: nunca é cortado
         tk.Label(frm,text='Duplo clique em uma linha para informar ou corrigir o código do funcionário. O código fica salvo para os próximos meses.',bg=CARD,fg=MUTED,font=(FONT,9)).pack(side='bottom',anchor='w',pady=(8,0))
         tabs=ttk.Notebook(frm);tabs.pack(fill='both',expand=True)
-        def set_code(cid,name,suggest):
-            # O código fica salvo no cadastro do motorista (servidor): nos próximos meses ele entra sozinho no TXT.
-            dlg=tk.Toplevel(win);dlg.title('Código no Domínio');dlg.configure(bg=CARD);dlg.transient(win);dlg.grab_set()
-            box=tk.Frame(dlg,bg=CARD,padx=22,pady=18);box.pack(fill='both',expand=True)
-            tk.Label(box,text=f'{name}  ·  {plates_text(used.get(cid))}',bg=CARD,fg=INK,font=(FONT,12)).pack(anchor='w')
-            tk.Label(box,text='Código do funcionário no Domínio (deixe vazio para voltar à busca pelo nome):',bg=CARD,fg=MUTED,font=(FONT,9)).pack(anchor='w',pady=(8,4))
-            var=tk.StringVar(value=suggest);ent=ttk.Entry(box,textvariable=var,font=(MONO,11));ent.pack(fill='x');ent.focus_set()
-            hint=tk.Label(box,text='',bg=CARD,fg=MUTED,font=(FONT,9));hint.pack(anchor='w',pady=(4,0))
-            show=lambda *a:hint.config(text=next((e['nome'] for e in employees if e['codigo']==var.get().strip()),'Código não está no PDF de cadastro' if var.get().strip() else ''))
-            var.trace_add('write',show);show()
-            def ok():
-                c=var.get().strip()
-                if c and (not c.isdigit() or len(c)>10):return messagebox.showerror('Código','Use só números, até 10 dígitos.',parent=dlg)
-                try:
-                    with sqlite3.connect(DB) as con:
-                        con.execute('UPDATE condutores SET codigo=? WHERE id=?',(c or None,cid))
-                        con.execute('INSERT INTO auditoria(instante,placa,data,operacao,detalhe) VALUES(?,?,?,?,?)',(dt.datetime.now().isoformat(),'','','CODIGO DOMINIO',f'{name}: {c or "removido"}'))
-                    self.publish()
-                except Exception as e:return messagebox.showerror('Código',str(e),parent=dlg)
-                dlg.destroy();win.destroy();self.export_txt()
-            live_button(box,'Salvar código',ok,True).pack(fill='x',pady=(12,0));ent.bind('<Return>',lambda e:ok())
+        set_code=lambda cid,name,suggest:self.code_dialog(win,cid,name,suggest,employees,lambda:(win.destroy(),self.export_txt()),plates_text(used.get(cid)))
         def table(title,cols,data,keys):
             box=tk.Frame(tabs,bg=CARD);tabs.add(box,text=title)
             t=ttk.Treeview(box,columns=[c for c,_,_ in cols],show='headings')

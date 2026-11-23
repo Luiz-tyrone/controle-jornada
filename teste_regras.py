@@ -116,4 +116,16 @@ with tempfile.TemporaryDirectory() as tmp:
     assert [p.name for p in esp.glob('*.db')] == ['jornadas_20261106_150000_000000.db']
     novos = {p.name: p.stat().st_mtime for p in srv.rglob('*')}
     assert all(novos[k] == v for k, v in antes.items()), 'o espelho não pode alterar o servidor'
+# 8) Exportar Excel: mesmas células da aba RELATÓRIO original (valores de entrada e fórmulas).
+import openpyxl
+with tempfile.TemporaryDirectory() as tmp:
+    arq = Path(tmp) / 'rel.xlsx'
+    cj.export_relatorio(arq, '2026-11', [('JOAO TESTE LIMA', {'2026-11-01': ('05:12:22', '11:38:25', '04:24:21', '00:00:00', '00:00:00', 'JORNADA')}),
+                                         ('PEDRO EXEMPLO SOUZA', {'2026-11-02': ('', '', '00:14:06', '00:32:53', '10:00:00', 'ESPERA FIXA')})])
+    ws = openpyxl.load_workbook(arq).active; sec = lambda a: round(ws[a].value.total_seconds())  # [h]:mm:ss volta como timedelta
+    assert ws.title == 'RELATÓRIO' and ws['C3'].value == 'JOAO TESTE LIMA' and ws['G3'].value == 'PEDRO EXEMPLO SOUZA'
+    assert sec('C5') == 18742 and sec('C6') == 15861 and ws['E5'].value == '=D5-C5'
+    assert ws['G19'].value is None and sec('G22') == 21600 and sec('H23') == 64800  # espera fixa 06-11 e 13-18
+    assert ws['C13'].value.startswith('=IF($A$1-E6-E7=TIME(23,59,59)') and ws['C416'].value.startswith('=E16+E29+')
+    assert ws['A382'].value == 30 and ws['A395'].value is None and 'C8:D8' in ws.merged_cells and ws.column_dimensions['E'].hidden  # novembro: 30 dias
 print('OK - todas as regras conferidas')

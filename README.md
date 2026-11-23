@@ -16,6 +16,8 @@ Se o repositório estiver privado, entre antes numa conta do GitHub com acesso a
 - **Importar PDF**: lê o relatório de jornada do rastreador e grava no banco que fica no servidor.
 - **Motoristas**: jornada diária e resumo do mês de cada motorista; duplo clique em um dia para corrigir (com motivo obrigatório).
 - **Planilha do mês**: todos os motoristas lado a lado, no formato da aba RELATÓRIO da planilha.
+- **Exportar Excel**: gera o `.xlsx` da aba RELATÓRIO igual à planilha original (cores, fórmulas e Resumo do Mês nas linhas 409 a 416); o Excel recalcula ao abrir.
+- **Códigos Domínio**: lista o código de funcionário de cada motorista (em amarelo, quem está sem); duplo clique para informar ou corrigir.
 - **Gerar TXT contábil**: gera o arquivo `HE_MMAAAA.txt` (rubricas 150 e 571, empresa 82), no mesmo layout do módulo Planilha de Horas do HUB RH. O código do funcionário no Domínio é confirmado uma vez por motorista e fica salvo.
 
 ## Para quem for alterar o código
